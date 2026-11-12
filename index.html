@@ -1,0 +1,1788 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LifeCorp: Brazil Edition</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#020617; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background:#334155; border-radius: 8px; }
+  .fade-in { animation: fade .25s ease-out; }
+  @keyframes fade { from { opacity:0; transform: translateY(6px);} to { opacity:1; transform:none;} }
+  .pop { animation: pop .2s ease-out; }
+  @keyframes pop { from { opacity:0; transform: scale(.96);} to { opacity:1; transform:none;} }
+  .fx { display:inline-block; margin-top:.5rem; padding:.25rem .6rem; border-radius:.6rem; background:#0f172a; border:1px solid #1e293b; font-size:.8rem; color:#cbd5e1; }
+  input[type=range] { accent-color:#10b981; }
+  .tabs::-webkit-scrollbar { display:none; }
+</style>
+</head>
+<body class="text-slate-100 min-h-screen">
+<div id="app"></div>
+<div id="modal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3"></div>
+<div id="toast" class="hidden fixed top-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-xl bg-slate-800 border border-slate-600 text-sm shadow-xl max-w-[90vw]"></div>
+
+<script>
+'use strict';
+/* =========================================================
+   LifeCorp: Brazil Edition — simulador de vida caótico
+   Arquivo único: estado, motor de tempo, eventos e UI.
+   ========================================================= */
+
+const SAVE_KEY = 'lifecorp_br_save_v1';
+const START_YEAR = 2026;
+const ENERGY_PER_YEAR = 6;
+
+/* ---------------- utilidades ---------------- */
+const $ = id => document.getElementById(id);
+const rnd = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const chance = p => Math.random() < p;
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a = 0, b = 100) => Math.max(a, Math.min(b, v));
+const r10 = v => Math.round(clamp(v, 0, 10) * 10) / 10;
+const brl = v => (v < 0 ? '-' : '') + 'R$ ' + Math.round(Math.abs(v)).toLocaleString('pt-BR');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+const sum = arr => arr.reduce((a, b) => a + b, 0);
+
+/* ---------------- dados base ---------------- */
+const NAMES = {
+  M: ['Joaquim','Enzo','Davi','Arthur','Miguel','Gabriel','Lucas','Pedro','Rafael','Bernardo','Heitor','Thiago','João','Matheus','Caio','Kauã','Wesley','Ronaldo','Cleiton','Juninho','Vinícius','Breno','Igor','Diego'],
+  F: ['Maria','Ana','Júlia','Alice','Helena','Valentina','Laura','Beatriz','Larissa','Camila','Fernanda','Gabriela','Jéssica','Thaís','Bruna','Letícia','Kelly','Vitória','Sophia','Luana','Daiane','Raíssa','Yasmin','Priscila'],
+  N: ['Ariel','Alex','Sam','Kim','Dani','Jordan','Cris','Noah','Rian','Luca']
+};
+const SURNAMES = ['Silva','Santos','Oliveira','Souza','Rodrigues','Ferreira','Alves','Pereira','Lima','Gomes','Costa','Ribeiro','Martins','Carvalho','Almeida','Lopes','Soares','Fernandes','Vieira','Barbosa','Rocha','Dias','Nascimento','Andrade','Moreira','Nunes','Marques','Machado','Mendes','Freitas','Cardoso','Ramos','Teixeira'];
+const COUNTRIES = {
+  'Brasil': ['São Paulo','Rio de Janeiro','Belo Horizonte','Salvador','Recife','Fortaleza','Porto Alegre','Curitiba','Manaus','Belém','Goiânia','Florianópolis','Cuiabá','Natal','Campinas','Vitória'],
+  'Portugal': ['Lisboa','Porto','Coimbra'],
+  'Argentina': ['Buenos Aires','Córdoba','Rosário'],
+  'Estados Unidos': ['Miami','Nova York','Orlando'],
+  'Japão': ['Tóquio','Osaka','Hamamatsu'],
+  'Angola': ['Luanda','Benguela'],
+  'Venezuela': ['Caracas','Maracaibo']
+};
+const BR_CITIES = COUNTRIES['Brasil'];
+const rname = g => pick(NAMES[g === 'N' ? 'N' : g]) + ' ' + pick(SURNAMES);
+const rgender = () => chance(0.48) ? 'M' : chance(0.94) ? 'F' : 'N';
+function oa(g) { g = g || (S && S.gender); return g === 'F' ? 'a' : g === 'N' ? 'e' : 'o'; }
+
+const STAT_META = {
+  health: ['Saúde', '❤️', 'bg-rose-500'],
+  happy: ['Felicidade', '😊', 'bg-amber-400'],
+  smarts: ['Inteligência', '🧠', 'bg-sky-500'],
+  looks: ['Aparência', '✨', 'bg-fuchsia-500'],
+  stress: ['Estresse', '😵', 'bg-orange-600']
+};
+
+/* ---------- educação ---------- */
+const COURSES = {
+  medicina:   { name: 'Medicina', years: 6, cut: 780, fee: 11000, icon: '🩺' },
+  odonto:     { name: 'Odontologia', years: 5, cut: 720, fee: 6500, icon: '🦷' },
+  engenharia: { name: 'Engenharia', years: 5, cut: 725, fee: 3200, icon: '⚙️' },
+  computacao: { name: 'Ciência da Computação', years: 4, cut: 735, fee: 2800, icon: '💻' },
+  direito:    { name: 'Direito', years: 5, cut: 730, fee: 2600, icon: '⚖️' },
+  adm:        { name: 'Administração', years: 4, cut: 660, fee: 1900, icon: '📊' },
+  artes:      { name: 'Artes (Visuais/Música/Cênicas)', years: 4, cut: 610, fee: 1500, icon: '🎨' },
+  pedagogia:  { name: 'Pedagogia / Licenciatura', years: 4, cut: 590, fee: 900, icon: '📚' }
+};
+const UNIS = [
+  { id: 'usp', name: 'USP', type: 'pub', prest: 1.08 },
+  { id: 'unicamp', name: 'UNICAMP', type: 'pub', prest: 1.06 },
+  { id: 'ufrj', name: 'UFRJ', type: 'pub', prest: 1.04 },
+  { id: 'ufmg', name: 'UFMG', type: 'pub', prest: 1.04 },
+  { id: 'unb', name: 'UnB', type: 'pub', prest: 1.02 },
+  { id: 'ufrgs', name: 'UFRGS', type: 'pub', prest: 1.02 },
+  { id: 'ufpe', name: 'UFPE', type: 'pub', prest: 1.0 },
+  { id: 'ufba', name: 'UFBA', type: 'pub', prest: 0.98 },
+  { id: 'fgv', name: 'FGV', type: 'priv', prest: 1.12, feeMul: 2.0, only: ['direito', 'adm', 'computacao'] },
+  { id: 'insper', name: 'Insper', type: 'priv', prest: 1.1, feeMul: 2.1, only: ['engenharia', 'computacao', 'adm', 'direito'] },
+  { id: 'pucsp', name: 'PUC-SP', type: 'priv', prest: 0.95, feeMul: 1.4 },
+  { id: 'mack', name: 'Mackenzie', type: 'priv', prest: 0.92, feeMul: 1.3 },
+  { id: 'unip', name: 'UNIP', type: 'priv', prest: 0.72, feeMul: 0.8 },
+  { id: 'estacio', name: 'Estácio', type: 'priv', prest: 0.7, feeMul: 0.75 },
+  { id: 'anhanguera', name: 'Anhanguera EAD', type: 'priv', prest: 0.6, feeMul: 0.35, except: ['medicina', 'odonto'] }
+];
+function uniOffers(u, cid) { if (u.only && !u.only.includes(cid)) return false; if (u.except && u.except.includes(cid)) return false; return true; }
+function uniCut(u, cid) { const c = COURSES[cid]; return Math.round(Math.min(905, c.cut * u.prest * (u.type === 'priv' ? 0.8 : 1))); }
+function uniFee(u, cid) { return u.type === 'pub' ? 0 : Math.round(COURSES[cid].fee * u.feeMul); }
+
+const SPECIALTIES = [
+  { id: 'cardio', name: 'Cardiologia', mult: 1.3 }, { id: 'derma', name: 'Dermatologia', mult: 1.25 },
+  { id: 'plastica', name: 'Cirurgia Plástica', mult: 1.55 }, { id: 'orto', name: 'Ortopedia', mult: 1.3 },
+  { id: 'pedi', name: 'Pediatria', mult: 0.95 }, { id: 'psiq', name: 'Psiquiatria', mult: 1.15 },
+  { id: 'mfc', name: 'Medicina de Família', mult: 0.9 }, { id: 'anest', name: 'Anestesiologia', mult: 1.4 }
+];
+
+/* ---------- empregos ---------- */
+const JOBS = [
+  { id: 'aprendiz', field: 'Primeiro emprego', ladder: ['Jovem Aprendiz'], base: 1000, type: 'CLT', req: null, minAge: 14, maxAge: 17, stress: 3, cos: ['Supermercado Pague Pouco', 'Banco do Bairro S.A.', 'Magazine Tudo Barato'] },
+  { id: 'fastfood', field: 'Comércio', ladder: ['Atendente', 'Líder de Turno', 'Gerente de Loja'], base: 1650, type: 'CLT', req: null, minAge: 16, stress: 6, cos: ['Burger Rei', 'McLanche Feliz', 'Esfiharia do Habibi'] },
+  { id: 'caixa', field: 'Comércio', ladder: ['Operador(a) de Caixa', 'Fiscal de Caixa', 'Encarregado(a) de Loja'], base: 1750, type: 'CLT', req: null, minAge: 16, stress: 5, cos: ['Atacadão do Povo', 'Supermercado Baratão', 'Hiper Bom Preço'] },
+  { id: 'vendedor', field: 'Comércio', ladder: ['Vendedor(a)', 'Vendedor(a) Sênior', 'Gerente Comercial'], base: 2100, type: 'CLT', req: null, minAge: 17, stress: 5, cos: ['Lojas Moda Já', 'Eletro Tudo', 'Shopping Center Norte - Quiosque de Capinhas'] },
+  { id: 'auxadm', field: 'Administrativo', ladder: ['Auxiliar Administrativo', 'Assistente Administrativo', 'Analista Administrativo'], base: 2300, type: 'CLT', req: 'medio', stress: 4, cos: ['Contabilidade Exata Ltda.', 'Transportadora Rápido Sul', 'Construtora Tijolinho'] },
+  { id: 'recep', field: 'Saúde', ladder: ['Recepcionista', 'Coordenador(a) de Recepção'], base: 2050, type: 'CLT', req: 'medio', stress: 4, cos: ['Clínica Vida Plena', 'Laboratório Exame Fácil', 'Hospital Santa Esperança'] },
+  { id: 'entregador', field: 'Informal / Apps', ladder: ['Entregador(a) de App'], base: 2400, type: 'informal', req: 'moto', stress: 7, cos: ['iFome', 'Rappidinho', 'Loggi-se'] },
+  { id: 'uber', field: 'Informal / Apps', ladder: ['Motorista de App'], base: 3300, type: 'informal', req: 'car', stress: 7, cos: ['Ubre', '99 Problemas', 'InDriver da Esquina'] },
+  { id: 'ambulante', field: 'Informal / Apps', ladder: ['Vendedor(a) Ambulante', 'Dono(a) de Barraca', 'Lenda do Camelódromo'], base: 1900, type: 'informal', req: null, minAge: 15, stress: 5, step: 1.35, cos: ['Praia de Copacabana', 'Rua 25 de Março', 'Estádio em dia de jogo'] },
+  { id: 'influencer', field: 'Informal / Apps', ladder: ['Influencer Nano', 'Influencer Micro', 'Influencer Famos' + 'o(a)', 'Celebridade da Internet'], base: 700, type: 'informal', req: null, minAge: 15, looksReq: 55, stress: 6, step: 2.6, cos: ['TikTok', 'Instagram', 'YouTube', 'Kwai'] },
+  { id: 'estagio', field: 'Estágio', ladder: ['Estagiário(a)'], base: 1700, type: 'bolsa', req: 'studying', stress: 4, cos: ['Banco Itaúnico', 'Startup ZapZap Pay', 'Escritório Mendes & Freitas', 'Hospital Universitário'] },
+  { id: 'plantonista', field: 'Medicina', ladder: ['Médico(a) Plantonista'], base: 15000, type: 'PJ', req: ['medicina'], stress: 13, cos: ['UPA Central', 'Pronto-Socorro Municipal', 'Hospital Santa Esperança'] },
+  { id: 'medico', field: 'Medicina', ladder: ['Médico(a) Especialista', 'Médico(a) Sênior', 'Chefe de Equipe', 'Diretor(a) Clínico(a)'], base: 24000, type: 'CLT', req: ['medicina'], flag: 'specialty', stress: 10, cos: ['Hospital São Lucas', 'Rede D\'Ouro Saúde', 'Hospital Sírio-Paulistano', 'Santa Casa de Misericórdia'] },
+  { id: 'dentista', field: 'Odontologia', ladder: ['Cirurgião(ã)-Dentista', 'Dentista Sênior', 'Coordenador(a) Clínico(a)'], base: 4800, type: 'CLT', req: ['odonto'], stress: 6, cos: ['Clínica SorriaMais', 'OdontoTop Franquias', 'Clínica Dente de Ouro'] },
+  { id: 'dentistapj', field: 'Odontologia', ladder: ['Dentista Credenciado(a)', 'Implantodontista'], base: 7000, type: 'PJ', req: ['odonto'], stress: 7, cos: ['Rede Sorriso Popular', 'Plano OdontoPrev-Já'] },
+  { id: 'devjr', field: 'Tecnologia', ladder: ['Dev Júnior', 'Dev Pleno', 'Dev Sênior', 'Tech Lead', 'CTO'], base: 5200, type: 'CLT', req: ['computacao', 'engenharia'], stress: 7, cos: ['Nubanco', 'iFome Tech', 'Startup PixPay', 'QuintoAndar de Cima', 'Magalu Labs'] },
+  { id: 'devgringa', field: 'Tecnologia', ladder: ['Software Engineer (Remote)', 'Senior Software Engineer', 'Staff Engineer'], base: 19000, type: 'PJ', req: ['computacao'], flag: 'english', minSmarts: 65, stress: 7, cos: ['Gringo Corp (Delaware)', 'CloudNine Inc.', 'Byte Dance-Dance LLC'] },
+  { id: 'engenheiro', field: 'Engenharia', ladder: ['Engenheiro(a) Trainee', 'Engenheiro(a) Júnior', 'Engenheiro(a) Pleno', 'Engenheiro(a) Sênior', 'Gerente de Engenharia'], base: 6200, type: 'CLT', req: ['engenharia'], stress: 7, cos: ['Petrobrasa', 'Vale do Ferro', 'Embraer-Voa', 'Construtora Concreto Forte'] },
+  { id: 'assistjur', field: 'Direito', ladder: ['Assistente Jurídico'], base: 2800, type: 'CLT', req: ['direito'], stress: 6, cos: ['Escritório Mendes & Freitas', 'Departamento Jurídico do Banco Itaúnico'] },
+  { id: 'advogado', field: 'Direito', ladder: ['Advogado(a) Associado(a)', 'Advogado(a) Pleno', 'Advogado(a) Sênior', 'Sócio(a)'], base: 6500, type: 'CLT', req: ['direito'], flag: 'oab', stress: 9, cos: ['Pinheiro & Neto Advogados', 'Machado Mendes Sociedade de Advogados', 'Escritório Rocha Dias'] },
+  { id: 'trainee', field: 'Negócios', ladder: ['Trainee', 'Analista', 'Coordenador(a)', 'Gerente', 'Diretor(a)', 'CEO'], base: 6800, type: 'CLT', req: ['adm', 'engenharia', 'direito', 'computacao'], minSmarts: 55, stress: 9, cos: ['Ambeve', 'Banco Itaúnico', 'Unileve', 'Natura-se'] },
+  { id: 'designer', field: 'Artes', ladder: ['Designer Júnior', 'Designer Pleno', 'Diretor(a) de Arte'], base: 3500, type: 'CLT', req: ['artes', 'computacao'], stress: 5, cos: ['Agência Criativa Pixel', 'Estúdio Rabisco', 'Publicitária Sal&Pimenta'] },
+  { id: 'musico', field: 'Artes', ladder: ['Músico(a) de Barzinho', 'Artista Independente', 'Artista com Hit no Streaming', 'Estrela Nacional'], base: 1800, type: 'informal', req: null, minAge: 16, stress: 5, step: 2.4, cos: ['Bar do Zé', 'Circuito Sertanejo', 'Festival Pagodão'] },
+  { id: 'ator', field: 'Artes', ladder: ['Ator/Atriz de Teatro', 'Figurante de Novela', 'Coadjuvante', 'Protagonista de Novela'], base: 2200, type: 'informal', req: null, minAge: 16, looksReq: 45, stress: 6, step: 2.2, cos: ['Teatro Oficina', 'Rede Globinho', 'Streaming Netflixo'] },
+  { id: 'professor', field: 'Educação', ladder: ['Professor(a)', 'Coordenador(a) Pedagógico(a)', 'Diretor(a) Escolar'], base: 3400, type: 'CLT', req: ['pedagogia', 'artes'], stress: 7, cos: ['Colégio Objetivo-Ativo', 'Escola Pequeno Príncipe', 'Colégio Bandeirantes do Sul'] }
+];
+const CONCURSOS = [
+  { id: 'pm', name: 'Soldado da Polícia Militar', ladder: ['Soldado PM', 'Cabo PM', 'Sargento PM'], base: 4500, req: 'medio', cut: 50, org: 'Polícia Militar', stress: 11 },
+  { id: 'inss', name: 'Técnico(a) do Seguro Social', ladder: ['Técnico(a) do Seguro Social', 'Técnico(a) Sênior'], base: 6200, req: 'medio', cut: 58, org: 'INSS', stress: 5 },
+  { id: 'profest', name: 'Professor(a) da Rede Estadual', ladder: ['Professor(a) PEB II', 'Coordenador(a) Pedagógico(a)'], base: 5000, req: ['pedagogia', 'artes'], cut: 48, org: 'Secretaria Estadual de Educação', stress: 8 },
+  { id: 'tribunal', name: 'Analista Judiciário', ladder: ['Analista Judiciário', 'Chefe de Seção', 'Diretor(a) de Secretaria'], base: 13500, req: 'any', cut: 72, org: 'Tribunal Regional Federal', stress: 5 },
+  { id: 'delegado', name: 'Delegado(a) de Polícia Civil', ladder: ['Delegado(a) de 3ª Classe', 'Delegado(a) de 1ª Classe', 'Delegado(a)-Geral'], base: 19000, req: ['direito'], cut: 82, org: 'Polícia Civil', stress: 12 },
+  { id: 'receita', name: 'Auditor(a)-Fiscal da Receita Federal', ladder: ['Auditor(a)-Fiscal', 'Delegado(a) da Receita'], base: 22000, req: 'any', cut: 88, org: 'Receita Federal', stress: 6 },
+  { id: 'juiz', name: 'Juiz(a) de Direito', ladder: ['Juiz(a) Substituto(a)', 'Juiz(a) Titular', 'Desembargador(a)'], base: 33000, req: ['direito'], flag: 'oab', cut: 93, org: 'Tribunal de Justiça', stress: 9 }
+];
+const BUSINESSES = [
+  { id: 'loja', name: 'Loja de roupas no Instagram', cost: 8000, base: 3000, req: null, vol: 0.5 },
+  { id: 'foodtruck', name: 'Food Truck de Pastel', cost: 60000, base: 8000, req: null, vol: 0.4 },
+  { id: 'startup', name: 'Startup de Tecnologia', cost: 30000, base: 25000, req: null, vol: 1.2, boost: 'computacao' },
+  { id: 'consultorio', name: 'Consultório Odontológico Próprio', cost: 150000, base: 22000, req: 'odonto', vol: 0.3 },
+  { id: 'escritorio', name: 'Escritório de Advocacia', cost: 40000, base: 16000, req: 'oab', vol: 0.4 },
+  { id: 'clinica', name: 'Clínica Médica Particular', cost: 400000, base: 55000, req: 'specialty', vol: 0.3 }
+];
+
+/* ---------- moradia, veículos ---------- */
+const RENTALS = [
+  { id: 'quitinete', name: 'Quitinete no centro', rent: 950 },
+  { id: 'apto1', name: 'Apartamento 1 quarto', rent: 1700 },
+  { id: 'apto2', name: 'Apartamento 2 quartos', rent: 2800 },
+  { id: 'casa', name: 'Casa com quintal e churrasqueira', rent: 4000 },
+  { id: 'cobertura', name: 'Cobertura de luxo com piscina', rent: 16000 }
+];
+const HOMES = [
+  { id: 'h1', name: 'Apartamento do Minha Casa Minha Vida', price: 230000 },
+  { id: 'h2', name: 'Apartamento 3 quartos', price: 680000 },
+  { id: 'h3', name: 'Casa em condomínio fechado', price: 1500000 },
+  { id: 'h4', name: 'Mansão com heliponto', price: 7000000 }
+];
+const VEHICLES = [
+  { id: 'moto', name: 'Moto 160cc', price: 19000, maint: 280, moto: true },
+  { id: 'seminovo', name: 'Sedan seminovo (2014)', price: 48000, maint: 700 },
+  { id: 'popular', name: 'Carro popular 1.0 zero', price: 78000, maint: 480 },
+  { id: 'suv', name: 'SUV zero km', price: 195000, maint: 950 },
+  { id: 'luxo', name: 'Esportivo de luxo importado', price: 780000, maint: 4500 }
+];
+
+/* ---------- doenças ---------- */
+const ILLNESSES = [
+  { name: 'Dengue', drain: 8, cost: 400, sus: 0.7 },
+  { name: 'Gripe que não passa', drain: 4, cost: 250, sus: 0.8 },
+  { name: 'Hérnia de disco', drain: 6, cost: 18000, sus: 0.35 },
+  { name: 'Gastrite nervosa', drain: 5, cost: 900, sus: 0.6 },
+  { name: 'Pedra no rim', drain: 9, cost: 7000, sus: 0.45 },
+  { name: 'Alergia bizarra a feijão', drain: 5, cost: 1500, sus: 0.4 },
+  { name: 'Unha encravada mutante', drain: 3, cost: 600, sus: 0.6 },
+  { name: 'Pressão alta', drain: 5, cost: 1200, sus: 0.5 },
+  { name: 'Diabetes tipo 2', drain: 6, cost: 3000, sus: 0.4 },
+  { name: 'Burnout', drain: 7, cost: 4000, sus: 0.3, stress: true },
+  { name: 'Hipocondria aguda', drain: 2, cost: 800, sus: 0.5 },
+  { name: 'Sinusite crônica', drain: 3, cost: 2500, sus: 0.5 }
+];
+
+/* =========================================================
+   ESTADO
+   ========================================================= */
+let S = null;          // estado da vida atual
+let Q = [];            // fila de eventos do ano
+let TAB = 'perfil';
+let MFN = [];          // callbacks do modal
+let CREATE = null;     // rascunho da tela de criação
+
+function newState(cfg) {
+  const city = pick(COUNTRIES[cfg.country] || BR_CITIES);
+  const famSurname = cfg.name.trim().split(/\s+/).slice(-1)[0] || pick(SURNAMES);
+  const pAge = rnd(20, 38);
+  const st = {
+    v: 1, name: cfg.name.trim(), gender: cfg.gender, country: cfg.country, city, familyClass: cfg.familyClass,
+    pref: cfg.gender === 'M' ? 'F' : cfg.gender === 'F' ? 'M' : 'all',
+    age: 0, year: START_YEAR, birthYear: START_YEAR, alive: true, death: null,
+    st: { health: cfg.health, happy: cfg.happy, smarts: cfg.smarts, looks: cfg.looks, stress: cfg.stress },
+    money: { pobre: 0, media: 2000, rica: 60000 }[cfg.familyClass] + cfg.moneyBonus,
+    energy: ENERGY_PER_YEAR, log: [], seen: {}, flags: { english: 0 },
+    school: null, grades: [], studyBoost: 0, highSchool: false, enem: null, enemPrep: 0,
+    uni: null, degrees: [], dropped: [],
+    job: null, linkedin: [], fgts: 0, contribYears: 0, salarySum: 0, salaryYears: 0,
+    unemp: { months: 0, value: 0 }, retired: null, sideGigs: [], business: null, workBoost: 0, concursoPrep: 0,
+    family: {
+      parents: [
+        { role: 'Mãe', name: pick(NAMES.F) + ' ' + famSurname, age: pAge + rnd(-3, 3), rel: rnd(55, 95), alive: true },
+        { role: 'Pai', name: pick(NAMES.M) + ' ' + famSurname, age: pAge + rnd(-2, 8), rel: rnd(40, 95), alive: true }
+      ],
+      siblings: []
+    },
+    partner: null, exes: [], children: [], prospects: [],
+    housing: { kind: 'pais' }, home: null, vehicles: [],
+    inv: { cdb: 0, tesouro: 0, acoes: 0, fii: 0 },
+    market: { selic: 11.25, bolsa: 8, fii: 2 },
+    fies: { debt: 0, payment: 0 },
+    illnesses: [], prison: 0, betCount: 0,
+    lastYear: { inc: 0, exp: 0, inv: 0 }
+  };
+  if (chance(0.15)) st.family.parents[1].alive = false, st.family.parents[1].note = 'foi comprar cigarro e nunca voltou';
+  const nsib = rnd(0, 2);
+  for (let i = 0; i < nsib; i++) { const g = rgender(); st.family.siblings.push({ role: g === 'F' ? 'Irmã' : 'Irmão', name: pick(NAMES[g]) + ' ' + famSurname, gender: g, age: rnd(1, 9), rel: rnd(40, 90), alive: true }); }
+  return st;
+}
+
+/* ---------- log ---------- */
+function logEntry() {
+  let e = S.log[0];
+  if (!e || e.age !== S.age) { e = { age: S.age, year: S.year, items: [] }; S.log.unshift(e); if (S.log.length > 130) S.log.pop(); }
+  return e;
+}
+function addLog(text, cls = '') { logEntry().items.push({ t: text, c: cls }); }
+
+/* ---------- efeitos de atributos ---------- */
+function fx(d) {
+  const parts = [];
+  for (const k in d) {
+    const v = Math.round(d[k]);
+    if (!v) continue;
+    if (k === 'money') { S.money += v; parts.push(`💵 ${v > 0 ? '+' : ''}${brl(v)}`); }
+    else if (S.st[k] !== undefined) { S.st[k] = clamp(S.st[k] + v); parts.push(`${STAT_META[k][1]} ${v > 0 ? '+' : ''}${v}`); }
+  }
+  return parts.length ? `<div class="fx">${parts.join(' &nbsp;·&nbsp; ')}</div>` : '';
+}
+
+/* ---------- consultas ---------- */
+const hasDegree = id => S.degrees.some(d => d.course === id);
+const anyDegree = () => S.degrees.length > 0;
+const hasCar = () => S.vehicles.some(v => !v.moto);
+const hasVehicle = () => S.vehicles.length > 0;
+const parentsAlive = () => S.family.parents.some(p => p.alive);
+const married = () => S.partner && S.partner.status === 'casado';
+const jobField = () => S.job ? S.job.field : null;
+function bestPrest(courses) { const ds = S.degrees.filter(d => !courses || courses.includes(d.course)); return ds.length ? Math.max(...ds.map(d => d.prest)) : 0; }
+function lifeStage() { const a = S.age; return a < 3 ? 'Bebê' : a < 13 ? 'Criança' : a < 18 ? 'Adolescente' : a < 30 ? 'Jovem adulto' : a < 60 ? 'Adulto' : 'Idoso'; }
+function schoolLabel(age) { const y = age - 5; return y <= 9 ? `${y}º ano do Fundamental` : `${y - 9}º ano do Ensino Médio`; }
+function inSchool() { return S.age >= 6 && S.age <= 17 && !S.highSchool && !S.flags.droppedSchool; }
+
+function reqOk(req, flag) {
+  if (flag && !S.flags[flag]) return false;
+  if (!req) return true;
+  if (req === 'medio') return S.highSchool || S.age >= 18;
+  if (req === 'studying') return !!S.uni;
+  if (req === 'moto') return hasVehicle();
+  if (req === 'car') return hasCar();
+  if (req === 'any') return anyDegree();
+  if (req === 'odonto') return hasDegree('odonto');
+  if (req === 'oab') return !!S.flags.oab;
+  if (req === 'specialty') return !!S.flags.specialty;
+  if (Array.isArray(req)) return req.some(hasDegree);
+  return false;
+}
+function reqLabel(req, flag) {
+  const parts = [];
+  if (req === 'medio') parts.push('Ensino Médio');
+  else if (req === 'studying') parts.push('Estar cursando faculdade');
+  else if (req === 'moto') parts.push('Ter moto ou carro');
+  else if (req === 'car') parts.push('Ter carro');
+  else if (req === 'any') parts.push('Qualquer diploma superior');
+  else if (req === 'odonto') parts.push('Diploma de Odontologia');
+  else if (req === 'oab') parts.push('Carteira da OAB');
+  else if (req === 'specialty') parts.push('Especialização médica');
+  else if (Array.isArray(req)) parts.push('Diploma: ' + req.map(r => COURSES[r].name).join(' ou '));
+  if (flag === 'oab') parts.push('OAB');
+  if (flag === 'specialty') parts.push('Residência concluída');
+  if (flag === 'english') parts.push('Inglês fluente');
+  return parts.join(' + ') || 'Nenhum requisito';
+}
+
+/* ---------- folha de pagamento (CLT simplificada 2026) ---------- */
+function calcINSS(s) {
+  const f = [[1518, 0.075], [2793.88, 0.09], [4190.83, 0.12], [8157.41, 0.14]];
+  let t = 0, prev = 0;
+  for (const [lim, a] of f) { if (s > prev) { t += (Math.min(s, lim) - prev) * a; prev = lim; } }
+  return t;
+}
+function calcIRRF(g, inss) {
+  if (g <= 5000) return 0; // isenção até R$ 5 mil (reforma do IR, vigente desde 2026)
+  const b = g - inss; let t;
+  if (b <= 2428.80) t = 0; else if (b <= 2826.65) t = b * 0.075 - 182.16; else if (b <= 3751.05) t = b * 0.15 - 394.16;
+  else if (b <= 4664.68) t = b * 0.225 - 675.49; else t = b * 0.275 - 908.73;
+  if (g <= 7350) t -= (978.62 - 0.133145 * g);
+  return Math.max(0, t);
+}
+function payroll(gross, type) {
+  if (type === 'CLT' || type === 'estatutario') { const i = calcINSS(gross), r = calcIRRF(gross, i); return { inss: i, irrf: r, net: gross - i - r, fgts: type === 'CLT' ? gross * 0.08 : 0 }; }
+  if (type === 'PJ') { const t = gross * 0.06, i = Math.min(gross * 0.11, 1518 * 0.11); return { inss: i, irrf: t, net: gross - t - i, fgts: 0 }; }
+  return { inss: 0, irrf: 0, net: gross, fgts: 0 };
+}
+const TYPE_LABEL = { CLT: 'CLT', PJ: 'PJ', informal: 'Informal', estatutario: 'Estatutário', bolsa: 'Bolsa' };
+
+/* ---------- orçamento mensal ---------- */
+function kidCost(c) { if (!c.custody || c.age >= 18) return 0; return c.age < 6 ? 1100 : 900 + (c.school === 'particular' ? 2800 : 0); }
+function alimony(c) { if (c.custody || c.age >= 18) return 0; return Math.max(500, Math.round(((S.job ? S.job.salary : 0) + (S.business ? Math.max(0, S.business.profitM) : 0)) * 0.15)); }
+function budget() {
+  const inc = [], exp = [];
+  if (S.prison > 0) return { inc, exp, net: 0 };
+  if (S.job) inc.push([`Salário líquido — ${S.job.title} (${TYPE_LABEL[S.job.type]})`, payroll(S.job.salary, S.job.type).net]);
+  S.sideGigs.forEach(g => inc.push([g.name, g.monthly]));
+  if (S.business) inc.push([`Lucro: ${S.business.name}`, S.business.profitM]);
+  if (S.retired) inc.push(['Aposentadoria do INSS', S.retired.pension]);
+  if (S.unemp.months > 0) inc.push([`Seguro-desemprego (${S.unemp.months} parcela(s))`, S.unemp.value]);
+  if (married() && S.partner.income > 0) inc.push([`Contribuição de ${S.partner.name.split(' ')[0]}`, Math.round(S.partner.income * 0.4)]);
+  if (S.age >= 10 && S.age < 18 && parentsAlive()) { const m = { pobre: 0, media: 150, rica: 800 }[S.familyClass]; if (m) inc.push(['Mesada dos pais', m]); }
+  if (S.inv.fii > 0) inc.push(['Dividendos de FIIs', Math.round(S.inv.fii * 0.0075)]);
+  if (S.age >= 18) {
+    const totalInc = sum(inc.map(x => x[1]));
+    const life = Math.round(Math.max(0, totalInc - 4000) * 0.22);
+    if (life > 0) exp.push(['Padrão de vida (delivery, roupas, lazer, assinaturas)', life]);
+    if (S.housing.kind === 'pais') { if (S.job || S.business) exp.push(['Ajuda nas contas da casa dos pais', 450]); }
+    else exp.push(['Custo de vida (mercado, luz, internet, transporte)', 1700 + (married() ? 700 : 0)]);
+  }
+  if (S.housing.kind === 'aluguel') exp.push([`Aluguel — ${S.housing.name}`, S.housing.rent]);
+  if (S.home) { if (S.home.fin) exp.push(['Parcela do financiamento imobiliário', S.home.fin.payment]); exp.push(['IPTU + condomínio', Math.round(S.home.value * 0.0011)]); }
+  S.vehicles.forEach(v => exp.push([`Combustível/manutenção — ${v.name}`, v.maint]));
+  S.children.forEach(c => { const k = kidCost(c); if (k) exp.push([`Criação de ${c.name.split(' ')[0]} (${c.age < 6 ? 'creche/saúde' : 'escola ' + c.school})`, k]); const a = alimony(c); if (a) exp.push([`Pensão alimentícia — ${c.name.split(' ')[0]}`, a]); });
+  if (S.uni && S.uni.payer === 'self') exp.push([`Mensalidade — ${S.uni.uniName}`, S.uni.fee]);
+  if (!S.uni && S.fies.debt > 0 && S.fies.payment > 0) exp.push(['Parcela do FIES', Math.min(S.fies.payment, S.fies.debt)]);
+  const net = sum(inc.map(x => x[1])) - sum(exp.map(x => x[1]));
+  return { inc, exp, net };
+}
+
+function netWorth() {
+  const inv = sum(Object.values(S.inv));
+  const home = S.home ? S.home.value - (S.home.fin ? S.home.fin.balance : 0) : 0;
+  const veh = sum(S.vehicles.map(v => v.value));
+  const biz = S.business ? S.business.value : 0;
+  return S.money + inv + S.fgts + home + veh + biz - S.fies.debt;
+}
+
+/* =========================================================
+   CARREIRA: contratar, demitir, LinkedIn
+   ========================================================= */
+function startJob(def, opts = {}) {
+  if (S.job) endJob('Pediu demissão', 'Saiu para assumir nova oportunidade.', 'quit');
+  const company = opts.company || pick(def.cos || [def.org]);
+  const title = opts.title || def.ladder[0];
+  const lid = Date.now() + '' + rnd(100, 999);
+  S.job = {
+    id: def.id, field: opts.field || def.field, title, level: 0, ladder: def.ladder, step: def.step || 1.3,
+    company, salary: Math.round(opts.salary || def.base), type: opts.type || def.type, start: S.year, years: 0,
+    perf: 50, fgtsJob: 0, stress: def.stress || 5, lid, residency: opts.residency || null
+  };
+  S.linkedin.push({ id: lid, company, title, start: S.year, end: null, status: 'Atual', type: S.job.type, field: S.job.field, salary: S.job.salary, ach: [`Contratad${oa()} como ${title} (${TYPE_LABEL[S.job.type]}) com salário de ${brl(S.job.salary)}/mês.`] });
+  addLog(`💼 Novo emprego: <b>${title}</b> em ${esc(company)} — ${brl(S.job.salary)}/mês (${TYPE_LABEL[S.job.type]}).`, 'text-emerald-300');
+}
+function liEntry(lid) { return S.linkedin.find(e => e.id === lid); }
+function liAch(text) { if (!S.job) return; const e = liEntry(S.job.lid); if (e) e.ach.push(text); }
+
+/* mode: quit | fired | justa | retire | prison | residency */
+function endJob(statusText, note, mode) {
+  if (!S.job) return '';
+  const j = S.job; let out = '';
+  const e = liEntry(j.lid);
+  if (e) { e.end = S.year; e.status = 'Anterior'; e.title = j.title; e.salary = j.salary; e.ach.push(`${note} ${j.years} ano(s) na casa, desempenho final ${Math.round(j.perf)}/100.`); e.exit = statusText; }
+  if (j.type === 'CLT') {
+    if (mode === 'fired') {
+      const multa = j.fgtsJob * 0.4, aviso = payroll(j.salary, 'CLT').net;
+      const saque = S.fgts + multa;
+      S.money += saque + aviso; S.fgts = 0;
+      if (j.years >= 1) S.unemp = { months: j.years >= 2 ? 5 : 4, value: Math.round(Math.min(2424, Math.max(1518, j.salary * 0.8))) };
+      out = `Demissão sem justa causa: você sacou o FGTS (${brl(saque - multa)}) + multa de 40% (${brl(multa)}) + aviso prévio (${brl(aviso)}).${j.years >= 1 ? ` Seguro-desemprego: ${S.unemp.months}x ${brl(S.unemp.value)}.` : ''}`;
+    } else if (mode === 'justa') out = 'Justa causa: sem multa, sem saque do FGTS, sem seguro-desemprego. O FGTS fica retido.';
+    else if (mode === 'quit') out = 'Pedido de demissão: sem multa de 40% e o FGTS fica retido na conta.';
+  }
+  addLog(`📤 Saiu de ${esc(j.company)} (${j.title}) — ${statusText}. ${out}`, 'text-slate-300');
+  S.job = null;
+  return out;
+}
+
+function fireJob(reason, justa = false) { return endJob(justa ? 'Demitid' + oa() + ' por justa causa' : 'Demitid' + oa(), reason, justa ? 'justa' : 'fired'); }
+
+function promote() {
+  const j = S.job;
+  if (!j || j.level >= j.ladder.length - 1) return false;
+  j.level++; j.title = j.ladder[j.level];
+  const old = j.salary;
+  j.salary = Math.round(j.salary * (j.step + Math.random() * 0.15));
+  j.perf = 55;
+  liAch(`🚀 Promovid${oa()} a ${j.title} em ${S.year} (${brl(old)} → ${brl(j.salary)}).`);
+  const e = liEntry(j.lid); if (e) e.title = j.title;
+  addLog(`🚀 PROMOÇÃO! Agora você é <b>${j.title}</b> (${brl(j.salary)}/mês).`, 'text-emerald-300');
+  return true;
+}
+
+function goPrison(years, reason) {
+  S.prison = years;
+  if (S.job) endJob('Pres' + oa(), 'Vínculo encerrado após prisão.', 'justa');
+  S.sideGigs = [];
+  addLog(`🚔 Você foi condenad${oa()} a ${years} ano(s) de prisão: ${reason}.`, 'text-rose-400');
+  if (S.partner && chance(0.5)) { addLog(`💔 ${esc(S.partner.name)} não aguentou e terminou com você enquanto estava pres${oa()}.`, 'text-rose-300'); dumpPartner(false); }
+}
+
+function die(cause) {
+  if (!S.alive) return;
+  S.alive = false; S.death = { age: S.age, year: S.year, cause };
+  addLog(`⚰️ Você faleceu aos ${S.age} anos: ${cause}.`, 'text-rose-400');
+  Q = [];
+}
+
+/* =========================================================
+   EVENTOS ANUAIS (o caos)
+   Cada evento: id, a:[idadeMin,idadeMax], w peso, c() condição,
+   t texto (string|fn), ch: escolhas [{l, f()}] ou f() automático.
+   ========================================================= */
+const P = () => S.partner;
+const pn = () => S.partner ? esc(S.partner.name.split(' ')[0]) : '';
+const kid = () => pick(S.children.filter(c => c.custody || true));
+function addIllness(name) {
+  const d = ILLNESSES.find(i => i.name === name) || pick(ILLNESSES);
+  if (S.illnesses.some(i => i.name === d.name)) return '';
+  S.illnesses.push({ ...d });
+  addLog(`🦠 Diagnóstico: ${d.name}.`, 'text-rose-300');
+  return `<div class="mt-2 text-rose-300">🦠 Você foi diagnosticad${oa()} com <b>${d.name}</b>. Vá ao médico na aba Atividades.</div>`;
+}
+function newChild(withPartner = true) {
+  const g = rgender();
+  const sur = S.name.split(' ').slice(-1)[0];
+  const c = { name: pick(NAMES[g]) + ' ' + sur, gender: g, age: 0, rel: 85, school: 'pública', custody: true, smarts: rnd(20, 90), other: withPartner && S.partner ? S.partner.name : null };
+  S.children.push(c);
+  addLog(`👶 Nasceu ${c.gender === 'F' ? 'sua filha' : c.gender === 'M' ? 'seu filho' : 'seu bebê'} <b>${c.name}</b>!`, 'text-pink-300');
+  return c;
+}
+
+const EVENTS = [
+  /* ---------- bebê / primeira infância ---------- */
+  { id: 'moeda', a: [1, 4], t: 'Você engoliu uma moeda de R$ 1 que estava no sofá. Correria pro pronto-socorro.', f: () => 'Ela saiu dois dias depois. Sua mãe guardou de lembrança.' + fx({ health: -5, stress: 5 }) },
+  { id: 'pix', a: [1, 2], once: 1, t: 'Hora de dizer a primeira palavra...', ch: [
+    { l: '"Mamãe"', f: () => 'Clássico. Sua mãe chorou.' + fx({ happy: 5 }) },
+    { l: '"Pix"', f: () => 'Sua família ficou preocupada com seu futuro capitalista.' + fx({ smarts: 4 }) },
+    { l: '"Uai"', f: () => 'Os mineiros da família te adotaram como mascote.' + fx({ happy: 6 }) }] },
+  { id: 'avo', a: [2, 9], t: 'Sua avó acha que você está "magrinh' + 'o(a) demais" e preparou um banquete de 4 mil calorias.', ch: [
+    { l: 'Comer tudo, até o pudim', f: () => 'A vó ficou feliz. Seu estômago, nem tanto.' + fx({ health: -3, happy: 8 }) },
+    { l: 'Fingir que comeu e dar pro cachorro', f: () => chance(0.5) ? 'O cachorro te dedurou vomitando no tapete. Bronca histórica.' + fx({ happy: -6 }) : 'Plano perfeito. O cachorro agradece.' + fx({ happy: 4 }) }] },
+  { id: 'caramelo', a: [3, 12], t: 'Um cachorro caramelo te seguiu da pracinha até em casa.', ch: [
+    { l: 'Implorar pra ficar com ele', f: () => { S.flags.pet = 'Caramelo'; return 'Seus pais cederam. O Caramelo agora é da família.' + fx({ happy: 12 }); } },
+    { l: 'Deixar ele na rua', f: () => 'Ele ficou te olhando com aquela cara. Você pensa nele até hoje.' + fx({ happy: -5 }) }] },
+  { id: 'heroi', a: [3, 8], t: 'Você pulou do sofá achando que sabia voar, igual seu super-herói favorito.', f: () => 'Não sabia. Gesso no braço por 1 mês.' + fx({ health: -7, smarts: 1 }) },
+  { id: 'xuxa', a: [2, 6], t: 'Você assistiu desenho por 9 horas seguidas no tablet.', f: () => 'Seus olhos ficaram quadrados, mas aprendeu inglês sozinh' + oa() + '.' + (() => { S.flags.english = Math.max(S.flags.english, 1); return fx({ smarts: 3, health: -2 }); })() },
+  /* ---------- infância escolar ---------- */
+  { id: 'bully', a: [6, 14], w: 2, t: () => `${pick(['O Kevin', 'A Brenda', 'O Thiaguinho', 'A Stephany'])} da sua sala começou a te zoar todo dia no recreio.`, ch: [
+    { l: 'Revidar no soco', f: () => chance(0.5) ? 'Você ganhou a briga e virou lenda da escola.' + fx({ happy: 8, health: -3 }) : 'Você apanhou feio e ainda tomou suspensão.' + fx({ health: -10, happy: -8 }) },
+    { l: 'Contar pra diretora', f: () => 'A diretora deu uma advertência. O bullying diminuiu, mas te chamam de X9.' + fx({ happy: -2, stress: -3 }) },
+    { l: 'Responder com uma zoeira melhor', f: () => S.st.smarts > 55 ? 'Sua resposta foi tão boa que a sala inteira riu do valentão.' + fx({ happy: 12 }) : 'Você gaguejou. Virou meme da turma.' + fx({ happy: -10 }) },
+    { l: 'Ignorar', f: () => 'Você engoliu o choro. Isso vai te custar terapia no futuro.' + fx({ happy: -6, stress: 6 }) }] },
+  { id: 'cola', a: [8, 17], w: 2, c: inSchool, t: 'Prova de matemática valendo nota do bimestre. O colega do lado está com a cola no estojo.', ch: [
+    { l: 'Colar sem dó', f: () => { if (chance(0.35)) { S.studyBoost -= 2; return 'A professora viu. Zero na prova e bilhete pros pais.' + fx({ happy: -10, stress: 8 }); } S.studyBoost += 1.5; return 'Ninguém viu. Nota 9,5. O crime compensa?' + fx({ happy: 4 }); } },
+    { l: 'Fazer a prova honestamente', f: () => { S.studyBoost += S.st.smarts > 60 ? 1 : -0.5; return 'Você fez o que deu. Sua consciência está limpa.' + fx({ smarts: 2 }); } }] },
+  { id: 'feira', a: [7, 14], c: inSchool, t: 'Feira de ciências! Você precisa escolher um projeto.', ch: [
+    { l: 'Vulcão de bicarbonato', f: () => 'O vulcão funcionou. Nota 10 e um elogio da diretora.' + fx({ smarts: 3, happy: 5 }) },
+    { l: 'Robô com sucata', f: () => chance(0.5) ? 'O robô andou! Você ganhou a feira regional.' + fx({ smarts: 8, happy: 10 }) : 'O robô pegou fogo. Evacuaram o ginásio.' + fx({ happy: -5, stress: 5 }) },
+    { l: 'Comprar pronto na internet', f: () => 'O professor percebeu o adesivo "Made in China".' + fx({ happy: -4 }) }] },
+  { id: 'figurinha', a: [6, 13], t: 'Ano de Copa! Um colega oferece a figurinha brilhante mais rara do álbum em troca do seu lanche da semana inteira.', ch: [
+    { l: 'Trocar', f: () => 'Você passou fome, mas completou o álbum. Vale mais que ouro.' + fx({ happy: 10, health: -3 }) },
+    { l: 'Recusar', f: () => 'O lanche estava bom. O álbum nunca foi completado.' + fx({ happy: -2 }) }] },
+  { id: 'futrua', a: [6, 15], t: 'Racha de futebol na rua até o poste acender.', f: () => chance(0.15) ? 'Você quebrou a janela da vizinha. Seus pais pagaram R$ 300.' + fx({ happy: 4, stress: 4 }) : 'Você fez um golaço de bicicleta. A rua inteira comentou.' + fx({ happy: 8, health: 4 }) },
+  { id: 'piolho', a: [5, 11], t: 'A escola mandou bilhete: surto de piolho na turma.', f: () => 'Adivinha quem pegou. Pente fino e cabelo raspado.' + fx({ looks: -6, happy: -5 }) },
+  { id: 'genio', a: [7, 14], c: () => S.st.smarts > 65, t: 'A professora disse na frente de todo mundo que você é "um gênio".', f: () => 'Agora todos pedem pra copiar seu dever.' + fx({ smarts: 3, happy: 5 }) },
+  { id: 'excursao', a: [8, 15], t: 'Excursão da escola para o zoológico.', f: () => pick(['Um macaco roubou seu boné.', 'Você se perdeu e foi achad' + oa() + ' no viveiro das araras.', 'Você vomitou no ônibus. Todos lembram.']) + fx({ happy: rnd(-3, 7) }) },
+  { id: 'reprovar', a: [10, 17], c: () => inSchool() && S.grades.length && S.grades[S.grades.length - 1].g < 5, t: 'Seu boletim veio cheio de vermelho. Seus pais estão com aquela cara.', ch: [
+    { l: 'Prometer que vai estudar', f: () => { S.studyBoost += 1; return 'Eles acreditaram (de novo).' + fx({ stress: 5 }); } },
+    { l: 'Culpar o professor', f: () => 'Ninguém acreditou. Ficou de castigo sem celular.' + fx({ happy: -8 }) }] },
+  /* ---------- adolescência ---------- */
+  { id: 'beijo', a: [12, 16], once: 1, t: 'Festa junina da escola. Aquela pessoa do correio elegante está te olhando...', ch: [
+    { l: 'Chegar junto', f: () => chance(0.6) ? 'Primeiro beijo atrás da barraca de pescaria! 💋' + fx({ happy: 14 }) : 'Levou um fora na frente da quadrilha inteira.' + fx({ happy: -10 }) },
+    { l: 'Fugir pra barraca de quentão', f: () => 'Quentão sem álcool não ajuda na coragem.' + fx({ happy: -3 }) }] },
+  { id: 'narguile', a: [14, 17], t: 'A galera te chamou pra fumar narguilé escondido na laje.', ch: [
+    { l: 'Topar', f: () => { if (chance(0.4)) return 'Sua mãe subiu na laje. Você está de castigo até os 30.' + fx({ health: -4, happy: -10 }); return 'Você tossiu muito, mas foi aceito no grupo.' + fx({ health: -5, happy: 6 }); } },
+    { l: 'Recusar', f: () => 'Te chamaram de careta. Seus pulmões agradecem.' + fx({ health: 2, happy: -2 }) }] },
+  { id: 'tiktok', a: [13, 25], t: 'Você postou uma dancinha de funk e ela VIRALIZOU: 3 milhões de views.', ch: [
+    { l: 'Abraçar a fama', f: () => { S.flags.fame = (S.flags.fame || 0) + 10; return 'Ganhou 80 mil seguidores. Marcas de chinelo te mandam recebidos.' + fx({ happy: 12, looks: 3, money: 800 }); } },
+    { l: 'Apagar de vergonha', f: () => 'Tarde demais. Já viraram figurinha de WhatsApp.' + fx({ happy: -6 }) }] },
+  { id: 'briga', a: [12, 17], c: inSchool, t: 'Briga generalizada na saída da escola!', ch: [
+    { l: 'Entrar na briga', f: () => chance(0.5) ? 'Você levou um soco e uma suspensão.' + fx({ health: -8, happy: -5 }) : 'Saiu ileso e com fama de brabo.' + fx({ happy: 6 }) },
+    { l: 'Separar', f: () => 'Você virou herói da coordenação.' + fx({ happy: 4, health: -2 }) },
+    { l: 'Filmar tudo', f: () => 'O vídeo foi parar no jornal local.' + fx({ happy: 5 }) }] },
+  { id: 'historico', a: [12, 17], t: 'Seus pais descobriram seu histórico de navegação.', f: () => 'Clima péssimo no café da manhã por uma semana.' + fx({ happy: -8, stress: 10 }) },
+  { id: 'olimpiada', a: [11, 17], c: () => S.st.smarts > 55, t: 'Você foi convidad' + 'o(a) para a Olimpíada Brasileira de Matemática (OBMEP).', ch: [
+    { l: 'Participar e estudar muito', f: () => chance(S.st.smarts / 110) ? (S.flags.obmep = 1, 'MEDALHA DE OURO! 🥇 Isso vai bombar seu currículo.' + fx({ smarts: 8, happy: 12 })) : 'Menção honrosa. Já é alguma coisa.' + fx({ smarts: 4 }) },
+    { l: 'Faltar pra jogar videogame', f: () => 'Você subiu de elo no jogo. Prioridades.' + fx({ happy: 5 }) }] },
+  { id: 'espinha', a: [12, 19], t: 'Uma espinha do tamanho de um planeta nasceu no seu nariz no dia da formatura do 9º ano.', f: () => 'Ela aparece em todas as fotos.' + fx({ looks: -5, happy: -5 }) },
+  { id: 'fakenews', a: [12, 80], t: 'Seu tio mandou uma fake news absurda no grupo da família dizendo que vacina transforma gente em jacaré.', ch: [
+    { l: 'Desmentir com fontes', f: () => 'Começou uma guerra no grupo. Sua tia saiu e voltou 3 vezes.' + fx({ stress: 8, smarts: 2 }) },
+    { l: 'Mandar figurinha de jacaré', f: () => 'Você foi removid' + oa() + ' do grupo. Paz finalmente.' + fx({ happy: 6 }) },
+    { l: 'Silenciar o grupo por 1 ano', f: () => 'Sábia decisão.' + fx({ stress: -5 }) }] },
+  { id: 'brigadeiro', a: [12, 17], t: 'Você começou a vender brigadeiro gourmet na escola.', f: () => { const v = rnd(200, 1500); return `Lucro de ${brl(v)} no ano. Já é empreendedor${S.gender === 'M' ? '' : 'a'}!` + fx({ money: v, happy: 5 }); } },
+  { id: 'vestibular_pressao', a: [16, 17], c: inSchool, t: 'Ano de ENEM chegando. Seus pais querem que você faça Medicina "porque dá dinheiro".', ch: [
+    { l: 'Aceitar a pressão', f: () => fx({ stress: 12 }) + 'Você agora estuda 10h por dia.' },
+    { l: 'Dizer que quer fazer Artes', f: () => 'Jantar silencioso. Mas você se sente livre.' + fx({ happy: 8, stress: 4 }) }] },
+  /* ---------- vida adulta: cotidiano caótico ---------- */
+  { id: 'assalto', a: [14, 90], w: 2, t: 'Você foi assaltad' + 'o(a) no ônibus voltando pra casa.', f: () => { const v = Math.min(Math.max(0, S.money), rnd(150, 1500)); return `Levaram seu celular e ${brl(v)}. O ladrão ainda disse "foi mal, irmão".` + fx({ money: -v, happy: -8, stress: 10 }); } },
+  { id: 'golpepix', a: [16, 90], t: 'Mensagem no WhatsApp: "Oi mãe/pai, troquei de número, preciso de R$ 2.000 urgente no Pix".', ch: [
+    { l: 'Mandar o Pix', f: () => 'Era golpe. Claro que era golpe.' + fx({ money: -2000, happy: -10, stress: 8 }) },
+    { l: 'Ligar pro número antigo', f: () => 'Sua família está bem. O golpista levou um sermão.' + fx({ smarts: 2, happy: 3 }) }] },
+  { id: 'nota50', a: [10, 90], t: 'Você achou uma nota de R$ 50 no bolso de uma calça velha.', f: () => 'Melhor dia do mês.' + fx({ money: 50, happy: 6 }) },
+  { id: 'piramide', a: [18, 80], w: 1.5, t: 'Seu tio do pavê te chama pra investir numa "criptomoeda revolucionária" que rende 30% ao mês.', ch: [
+    { l: 'Investir R$ 5.000', f: () => chance(0.2) ? 'Você saiu na hora certa e dobrou o dinheiro!' + fx({ money: 5000, happy: 10 }) : 'Era pirâmide. O "CEO" fugiu para Dubai.' + fx({ money: -5000, happy: -12, stress: 10 }) },
+    { l: 'Recusar', f: () => '3 meses depois, a PF fez operação na empresa. Você se livrou!' + fx({ smarts: 3 }) }] },
+  { id: 'indecente', a: [18, 60], w: 0.7, t: 'Um milionário excêntrico te oferece R$ 500 mil para raspar a cabeça e tatuar o logo da empresa dele na testa.', ch: [
+    { l: 'Aceitar o dinheiro', f: () => 'Você está rico(a) e com um logo de energético na testa para sempre.' + fx({ money: 500000, looks: -25, happy: 5 }) },
+    { l: 'Recusar com dignidade', f: () => 'Sua testa continua limpa. Sua conta, também.' + fx({ happy: 2 }) }] },
+  { id: 'doencabizarra', a: [8, 90], w: 0.6, t: 'Você acordou se sentindo estranh' + 'o(a)...', f: () => addIllness(pick(ILLNESSES).name) + fx({ health: -5 }) },
+  { id: 'espinha_peixe', a: [5, 90], t: 'Você engasgou com uma espinha de peixe no almoço de domingo.', f: () => 'O tio fez manobra de Heimlich (errado), mas deu certo.' + fx({ health: -6, stress: 5 }) },
+  { id: 'pagode', a: [18, 90], t: 'Seu vizinho faz churrasco com pagode no último volume TODO domingo.', ch: [
+    { l: 'Reclamar com o síndico', f: () => 'O síndico é primo dele. Nada mudou.' + fx({ stress: 6 }) },
+    { l: 'Se juntar ao churrasco', f: () => 'Você virou o(a) melhor amigo(a) do vizinho e aprendeu a tocar pandeiro.' + fx({ happy: 10, health: -3 }) },
+    { l: 'Revidar com sertanejo às 7h da manhã', f: () => 'Começou a guerra fria do condomínio.' + fx({ stress: 10, happy: 4 }) }] },
+  { id: 'mesario', a: [18, 70], c: () => S.year % 2 === 0, t: 'Você foi convocad' + 'o(a) para ser mesári' + 'o(a) nas eleições.', ch: [
+    { l: 'Ir trabalhar', f: () => 'Ganhou 2 dias de folga e um lanche de pão com mortadela.' + fx({ happy: -2, stress: 3 }) },
+    { l: 'Faltar', f: () => 'Multa da Justiça Eleitoral e dor de cabeça pra regularizar.' + fx({ money: -350, stress: 5 }) }] },
+  { id: 'malhafina', a: [22, 90], c: () => S.job && S.job.salary > 5000, t: 'Receita Federal: você caiu na MALHA FINA!', ch: [
+    { l: 'Pagar a diferença', f: () => { const v = Math.round(S.job.salary * rnd(5, 15) / 10); return `Você pagou ${brl(v)} e dormiu em paz.` + fx({ money: -v, stress: 4 }); } },
+    { l: 'Contratar contador (R$ 1.500)', f: () => chance(0.65) ? 'O contador achou o erro: era recibo do dentista. Resolvido!' + fx({ money: -1500, stress: -2 }) : 'O contador piorou tudo. Multa dobrada.' + fx({ money: -1500 - S.job.salary, stress: 10 }) },
+    { l: 'Ignorar', f: () => { S.flags.receita = 1; return 'Isso não vai acabar bem...' + fx({ stress: 6 }); } }] },
+  { id: 'receitavolta', a: [22, 90], c: () => S.flags.receita, once: 1, t: 'Aquela pendência da Receita virou dívida ativa com juros.', f: () => { S.flags.receita = 0; return 'Seu CPF ficou bloqueado até você pagar.' + fx({ money: -rnd(8000, 25000), stress: 12 }); } },
+  { id: 'heranca', a: [18, 90], w: 0.5, t: 'Um tio-avô que você nem conhecia morreu e te deixou uma herança.', f: () => { const v = rnd(15, 400) * 1000; return `Você herdou ${brl(v)}! Ele era dono de 3 postos de gasolina no interior.` + fx({ money: v, happy: 15 }); } },
+  { id: 'guincho', a: [18, 90], c: hasVehicle, t: 'Seu veículo foi guinchado por estacionar em lugar proibido.', f: () => 'Pátio + multa + taxa de remoção.' + fx({ money: -rnd(600, 1800), stress: 8 }) },
+  { id: 'enchente', a: [18, 90], t: 'Uma chuva de verão alagou sua rua e entrou água na sua casa.', f: () => 'Perdeu o sofá, a geladeira e a dignidade.' + fx({ money: -rnd(2000, 9000), happy: -10, stress: 12 }) },
+  { id: 'elevador', a: [10, 90], t: 'Você ficou pres' + 'o(a) 6 horas no elevador com o síndico, que falou de política o tempo todo.', f: () => 'Trauma desbloqueado.' + fx({ stress: 12, happy: -5 }) },
+  { id: 'bot', a: [18, 60], c: () => !S.partner, t: 'Você se apaixonou perdidamente por alguém no app de namoro... era um bot de golpe.', f: () => 'Você quase mandou R$ 3 mil "pra passagem de avião".' + fx({ happy: -10, smarts: 2 }) },
+  { id: 'reality', a: [18, 45], w: 0.6, t: 'Você foi convidad' + 'o(a) para participar de um reality show de confinamento!', ch: [
+    { l: 'Entrar na casa', f: () => { const r = Math.random(); if (r < 0.1) { S.flags.fame = (S.flags.fame || 0) + 40; return 'VOCÊ GANHOU O REALITY! R$ 1,5 milhão e fama nacional! 🏆' + fx({ money: 1500000, happy: 25, looks: 5 }); } if (r < 0.5) { S.flags.fame = (S.flags.fame || 0) + 15; return 'Você saiu no paredão com 98% de rejeição, mas virou meme e fechou publis.' + fx({ money: 60000, happy: -5, stress: 15 }); } return 'Você foi eliminad' + oa() + ' na primeira semana. Ninguém lembra de você.' + fx({ happy: -10 }); } },
+    { l: 'Recusar', f: () => 'Você assistiu de casa comendo pipoca.' + fx({ happy: 2 }) }] },
+  { id: 'meme', a: [15, 90], t: 'Uma foto sua tropeçando na rua virou meme nacional.', f: () => chance(0.5) ? 'Você abraçou o meme e fechou publi com uma marca de tênis.' + fx({ money: 8000, happy: 8 }) : 'Você não consegue mais sair de casa sem ser reconhecid' + oa() + '.' + fx({ happy: -10, stress: 10 }) },
+  { id: 'coach', a: [20, 70], t: 'Um coach quântico te oferece um curso de R$ 12 mil para "destravar sua mente milionária".', ch: [
+    { l: 'Comprar o curso', f: () => 'Você aprendeu a gritar "EU SOU UM VENCEDOR" no espelho. Só isso.' + fx({ money: -12000, happy: 3, smarts: -3 }) },
+    { l: 'Denunciar o coach', f: () => 'O coach te bloqueou. Você salvou 12 mil reais.' + fx({ smarts: 2 }) }] },
+  { id: 'blackfriday', a: [18, 90], t: 'Black Friday! Você comprou uma Air Fryer, um aspirador robô e uma esteira que vai virar cabide.', f: () => 'Tudo "pela metade do dobro".' + fx({ money: -rnd(1500, 5000), happy: 6 }) },
+  { id: 'pombo', a: [10, 90], t: 'Um pombo fez cocô na sua cabeça minutos antes de um compromisso importante.', f: () => 'Dizem que dá sorte. Não deu.' + fx({ looks: -3, happy: -4 }) },
+  { id: 'festival', a: [16, 45], t: 'Você foi a um festival de música eletrônica de 3 dias no meio do mato.', f: () => 'Voltou sem voz, sem dinheiro e com 12 amigos novos.' + fx({ happy: 12, health: -5, money: -1500 }) },
+  { id: 'gato', a: [16, 90], c: () => S.flags.pet || chance(0.3), t: 'Seu gato derrubou café no seu notebook.', f: () => 'Ele olhou pra você e derrubou o copo de água também.' + fx({ money: -rnd(2000, 6000), stress: 8 }) },
+  { id: 'sequestro', a: [25, 90], t: 'Ligação: "Estamos com seu parente, deposite R$ 10 mil ou...". Golpe do falso sequestro.', ch: [
+    { l: 'Desligar e ligar pra família', f: () => 'Todos estavam bem. Você foi espert' + oa() + '.' + fx({ stress: 6 }) },
+    { l: 'Entrar em pânico e depositar', f: () => 'Golpe. Delegacia, B.O. e nada de dinheiro de volta.' + fx({ money: -10000, stress: 15 }) }] },
+  { id: 'bilhete', a: [16, 90], t: 'Você achou na rua um bilhete de raspadinha não raspado.', ch: [
+    { l: 'Raspar', f: () => { const v = chance(0.05) ? 50000 : chance(0.3) ? 20 : 0; return v ? `Ganhou ${brl(v)}!` + fx({ money: v, happy: v > 1000 ? 20 : 4 }) : 'Não ganhou nada. Tente outra vez.'; } },
+    { l: 'Deixar pra lá', f: () => 'Alguém pegou logo depois e gritou de felicidade. Nunca saberemos.' + fx({ happy: -2 }) }] },
+  { id: 'apagao', a: [5, 90], t: 'Apagão no bairro por 3 dias.', f: () => 'A carne do freezer estragou. Seu celular também.' + fx({ happy: -6, stress: 6, money: -300 }) },
+  { id: 'mlm', a: [18, 70], t: 'Uma amiga sumida há 10 anos te chamou: "Oi sumid' + 'a! Tenho uma oportunidade incrível...". É marketing multinível de cosméticos.', ch: [
+    { l: 'Entrar no "negócio"', f: () => 'Você comprou R$ 4 mil em estoque e vendeu 2 batons para sua mãe.' + fx({ money: -3800, happy: -5 }) },
+    { l: 'Visualizar e não responder', f: () => 'Ela ainda te manda áudio de 5 minutos.' + fx({ stress: 2 }) }] },
+  { id: 'copa', a: [5, 95], c: () => S.year % 4 === 2, t: 'COPA DO MUNDO! O Brasil foi eliminado nos pênaltis nas quartas de final.', f: () => 'O país inteiro chorou junto. Você culpou o técnico.' + fx({ happy: -10, stress: 5 }) },
+  { id: 'carnaval', a: [16, 70], w: 1.4, t: 'Chegou o Carnaval!', ch: [
+    { l: 'Cair no bloco 4 dias seguidos', f: () => { let r = 'Você virou purpurina humana.'; if (!S.partner && chance(0.4)) { meetPeople('carnaval', 1); r += ' E conheceu alguém interessante no bloco! (veja Relacionamentos)'; } return r + fx({ happy: 15, health: -6, money: -800 }); } },
+    { l: 'Viajar pra praia', f: () => 'Trânsito de 9 horas na serra, mas a praia valeu.' + fx({ happy: 8, money: -2000, stress: -5 }) },
+    { l: 'Descansar e maratonar série', f: () => 'Paz absoluta.' + fx({ stress: -10, happy: 3 }) }] },
+  { id: 'blitz', a: [18, 90], w: 1.5, c: hasVehicle, t: 'BLITZ POLICIAL na volta de uma festa. "Documento do veículo e habilitação, por favor."', ch: [
+    { l: 'Fazer o bafômetro', f: () => chance(0.3) ? 'Deu positivo por causa do bombom de licor. Multa gravíssima e CNH suspensa.' + fx({ money: -2934, stress: 12 }) : 'Zero álcool. O policial te liberou com um "boa noite".' + fx({ stress: -2 }) },
+    { l: 'Recusar o bafômetro', f: () => 'Recusar também é infração: multa de R$ 2.934 e CNH suspensa por 12 meses.' + fx({ money: -2934, stress: 10 }) },
+    { l: 'Oferecer "um cafezinho" pro guarda', f: () => chance(0.45) ? (goPrison(1, 'corrupção ativa em blitz'), 'O policial era da Corregedoria. Você foi pres' + oa() + ' em flagrante por corrupção ativa!' + fx({ happy: -25, stress: 25 })) : 'O guarda fingiu que não ouviu e te liberou. Você tremeu até em casa.' + fx({ stress: 10 }) }] },
+  { id: 'crise', a: [40, 55], once: 1, t: 'Bateu a CRISE DE MEIA-IDADE. Você se olhou no espelho e pensou: "é só isso?"', ch: [
+    { l: 'Comprar uma moto esportiva', f: () => { S.vehicles.push({ id: 'motoesp', name: 'Moto esportiva 1000cc', value: 70000, maint: 600, moto: true }); return 'Você comprou uma moto de R$ 70 mil e uma jaqueta de couro.' + fx({ money: -70000, happy: 15 }); } },
+    { l: 'Largar tudo e virar artesã' + 'o em Trancoso', f: () => { if (S.job) endJob('Pediu demissão', 'Largou tudo para viver de artesanato na Bahia.', 'quit'); return 'Você vende pulseiras de miçanga e nunca foi tão feliz.' + fx({ happy: 25, stress: -30 }); } },
+    { l: 'Fazer uma tatuagem enorme', f: () => 'Um dragão nas costas inteiras. Sua mãe ainda não sabe.' + fx({ happy: 10, money: -3500, looks: 2 }) },
+    { l: 'Fazer terapia', f: () => 'Você descobriu que o problema era a sua infância (sempre é).' + fx({ stress: -15, money: -3000, happy: 6 }) }] },
+  { id: 'meiaidade2', a: [45, 60], t: 'Você descobriu que precisa de óculos de leitura e que seus joelhos fazem barulho.', f: () => 'O tempo não perdoa.' + fx({ looks: -3, health: -3 }) },
+  { id: 'infarto', a: [50, 100], w: 0.7, c: () => S.st.health < 45 || S.st.stress > 75, t: 'Dor forte no peito durante o almoço...', f: () => { if (chance(0.15)) { die('infarto fulminante'); return 'Foi um infarto fulminante.'; } return 'Infarto! Você sobreviveu graças à equipe do SAMU.' + fx({ health: -25, stress: 10 }); } },
+  { id: 'checkup', a: [45, 90], t: 'Seu médico recomenda um check-up completo.', ch: [
+    { l: 'Fazer os exames', f: () => { if (S.illnesses.length && chance(0.5)) { S.illnesses.shift(); return 'Os exames encontraram um problema cedo e foi tratado!' + fx({ health: 8, money: -800 }); } return 'Tudo em ordem, mas o colesterol está "no limite".' + fx({ health: 3, money: -800 }); } },
+    { l: 'Deixar pra depois', f: () => chance(0.3) ? addIllness('Pressão alta') : 'Por enquanto nada aconteceu.' }] },
+  { id: 'loteria_grande', a: [18, 95], w: 0.08, t: 'Você jogou os números do seu aniversário no bolão do trabalho...', f: () => { const v = rnd(2, 30) * 1000000; return `O BOLÃO GANHOU A MEGA-SENA! Sua parte: ${brl(v)}! 🍀🍀🍀` + fx({ money: v, happy: 35, stress: -10 }); } },
+  /* ---------- crimes de colarinho branco ---------- */
+  { id: 'licitacao', a: [25, 75], c: () => S.job && (S.job.level >= 2 || ['Negócios', 'Engenharia', 'Direito'].includes(S.job.field) || S.job.type === 'estatutario'), t: 'Seu superior propõe superfaturar um contrato de licitação e dividir R$ 300 mil com você. "Ninguém vai saber."', ch: [
+    { l: 'Aceitar o esquema', f: () => { S.flags.dirty = (S.flags.dirty || 0) + 1; return 'R$ 300 mil numa conta em nome do seu primo. Você não dorme direito desde então.' + fx({ money: 300000, stress: 15 }); } },
+    { l: 'Recusar', f: () => { if (S.job) S.job.perf -= 15; return 'Seu chefe ficou frio com você. Seu desempenho "caiu" misteriosamente.' + fx({ stress: 8 }); } },
+    { l: 'Denunciar ao Ministério Público', f: () => { if (chance(0.5)) { fireJob('Retaliação após denúncia.', false); return 'Você foi demitid' + oa() + ' "por reestruturação", mas o chefe foi preso. Justiça poética.' + fx({ happy: 8, stress: 10 }); } return 'Seu chefe foi afastado e você virou referência de integridade!' + (promote() ? ' E ainda foi promovid' + oa() + '!' : '') + fx({ happy: 12 }); } }] },
+  { id: 'laranja', a: [20, 70], t: 'Um "empresário" te oferece R$ 20 mil para abrir uma empresa no seu nome. Você não precisa fazer nada.', ch: [
+    { l: 'Aceitar ser laranja', f: () => { S.flags.dirty = (S.flags.dirty || 0) + 1; return 'Dinheiro fácil... por enquanto.' + fx({ money: 20000, stress: 6 }); } },
+    { l: 'Recusar', f: () => 'Você assistiu a reportagem sobre o esquema no Fantástico meses depois.' + fx({ smarts: 2 }) }] },
+  { id: 'pf', a: [20, 90], w: 3, c: () => S.flags.dirty > 0 && S.prison === 0, t: '6h da manhã. Campainha. "POLÍCIA FEDERAL! Operação Lava-Pato!"', ch: [
+    { l: 'Fazer delação premiada', f: () => { const y = rnd(0, 2); S.flags.dirty = 0; if (y === 0) return 'Você entregou todo mundo e ficou em prisão domiciliar com tornozeleira.' + fx({ money: -Math.max(0, S.money) * 0.5, happy: -15, stress: 15 }); goPrison(y, 'colarinho branco (com delação)'); return `Delação aceita. Pena reduzida para ${y} ano(s).` + fx({ money: -Math.max(0, S.money) * 0.5, happy: -15 }); } },
+    { l: 'Contratar advogado caríssimo', f: () => { S.flags.dirty = 0; if (chance(0.5)) return 'Seu advogado achou uma nulidade processual. Caso arquivado!' + fx({ money: -150000, stress: 15 }); goPrison(rnd(3, 7), 'lavagem de dinheiro e corrupção'); return 'Não adiantou. Condenação mantida.' + fx({ money: -150000, happy: -25 }); } },
+    { l: 'Tentar fugir pelo telhado', f: () => { S.flags.dirty = 0; goPrison(rnd(5, 9), 'corrupção, lavagem e fuga'); return 'Você caiu no quintal do vizinho. A cena foi ao vivo no jornal.' + fx({ health: -15, happy: -30 }); } }] },
+  /* ---------- trabalho ---------- */
+  { id: 'burnout', a: [18, 75], c: () => S.job && S.st.stress > 70, t: 'Você chorou no banheiro da empresa pela terceira vez essa semana. Sinais claros de burnout.', ch: [
+    { l: 'Pegar atestado e se tratar', f: () => { S.job.perf -= 10; return addIllness('Burnout') + 'Afastamento de 30 dias.' + fx({ stress: -25, happy: 5 }); } },
+    { l: 'Seguir trabalhando', f: () => addIllness('Burnout') + fx({ health: -10, stress: 10 }) }] },
+  { id: 'professorfac', a: [27, 75], once: 1, c: () => anyDegree() && S.st.smarts > 55, t: () => `A coordenação da ${pick(['PUC', 'Estácio', 'UNIP', 'Mackenzie', 'faculdade local'])} te fez uma proposta para dar aulas à noite no curso de ${COURSES[S.degrees[0].course].name}.`, ch: [
+    { l: 'Aceitar (renda extra)', f: () => { const m = rnd(35, 70) * 100; S.sideGigs.push({ name: 'Professor(a) universitário(a) (noite)', monthly: m }); S.linkedin.push({ id: 'gig' + Date.now(), company: 'Faculdade parceira', title: 'Professor(a) Universitário(a)', start: S.year, end: null, status: 'Atual', type: 'PJ', field: 'Educação', salary: m, ach: ['Convidad' + oa() + ' para lecionar no ensino superior.'] }); return `Você agora dá aulas e ganha ${brl(m)}/mês extras.` + fx({ happy: 8, stress: 6 }); } },
+    { l: 'Recusar', f: () => 'Você ainda tem vida à noite. Por enquanto.' }] },
+  { id: 'processoodonto', a: [22, 80], c: () => (S.job && S.job.field === 'Odontologia') || (S.business && S.business.id === 'consultorio'), t: 'Um paciente processou a clínica alegando que a lente de contato dental deixou ele "parecendo um cavalo".', ch: [
+    { l: 'Fazer acordo (R$ 20 mil)', f: () => 'Caso encerrado. O paciente postou foto sorrindo no Instagram mesmo assim.' + fx({ money: -20000, stress: 6 }) },
+    { l: 'Brigar na justiça', f: () => chance(0.5) ? 'O juiz deu ganho de causa a você! A perícia provou que o sorriso estava ótimo.' + fx({ happy: 10, money: -5000 }) : 'Você perdeu. Indenização de R$ 80 mil.' + fx({ money: -80000, stress: 15 }) },
+    { l: 'Culpar o protético', f: () => 'Funcionou parcialmente. Mas o protético não fala mais com você.' + fx({ money: -8000, stress: 4 }) }] },
+  { id: 'startuptombo', a: [18, 80], c: () => S.business && S.business.id === 'startup', t: 'Sua startup levou um TOMBO: o fundo de investimento desistiu do aporte e o caixa dá para 2 meses.', ch: [
+    { l: 'Demitir metade do time', f: () => { S.business.rep -= 10; S.business.value *= 0.6; return 'Corte doloroso. A startup sobrevive, mas o clima está péssimo.' + fx({ happy: -10, stress: 15 }); } },
+    { l: 'Pivotar pra Inteligência Artificial', f: () => { if (chance(0.4)) { S.business.value *= 3; S.business.rep += 25; return 'Colocou "IA" no nome e os investidores enlouqueceram! Valuation triplicou!' + fx({ happy: 15 }); } S.business.value *= 0.3; return 'Ninguém entendeu o pivô. Nem você.' + fx({ stress: 20 }); } },
+    { l: 'Colocar dinheiro do próprio bolso', f: () => { const v = Math.min(Math.max(0, S.money), 80000); S.business.value += v; S.business.rep += 5; return `Você injetou ${brl(v)}. Fé no projeto!` + fx({ money: -v, stress: 10 }); } }] },
+  { id: 'anjo', a: [18, 80], c: () => S.business && S.business.id === 'startup' && S.business.rep > 40, t: 'Um investidor-anjo do Vale do Silício quer aportar na sua startup.', ch: [
+    { l: 'Aceitar (ceder 20%)', f: () => { S.business.value *= 2; S.business.rep += 15; return 'Rodada fechada! Você virou capa de revista de negócios.' + fx({ happy: 15, money: 50000 }); } },
+    { l: 'Recusar e manter o controle', f: () => 'Você manteve 100% de uma empresa que ninguém sabe se vai dar certo.' + fx({ stress: 5 }) }] },
+  { id: 'erromedico', a: [24, 80], c: () => S.job && S.job.field === 'Medicina', t: 'Plantão de 24h, 3h da manhã, você está exaust' + 'o(a) e chega um caso grave.', ch: [
+    { l: 'Atender com tudo que tem', f: () => chance(0.75) ? 'Você salvou a vida do paciente. A família te mandou um bolo.' + fx({ happy: 15, stress: 8 }) + (S.job ? (S.job.perf += 10, '') : '') : 'Complicação inevitável. Você não dorme há dias pensando nisso.' + fx({ happy: -12, stress: 15 }) },
+    { l: 'Chamar o chefe de plantão', f: () => 'O chefe resolveu, mas reclamou de ser acordado.' + fx({ stress: 4 }) }] },
+  { id: 'plantao36', a: [24, 70], c: () => S.job && S.job.field === 'Medicina', t: 'O hospital te chamou para cobrir um plantão de 36 horas no feriado. Paga em dobro.', ch: [
+    { l: 'Aceitar', f: () => 'Você virou zumbi, mas a conta agradece.' + fx({ money: rnd(6000, 12000), stress: 15, health: -5 }) },
+    { l: 'Recusar', f: () => 'Feriado com a família.' + fx({ happy: 6, stress: -5 }) }] },
+  { id: 'deploy', a: [18, 70], c: () => S.job && S.job.field === 'Tecnologia', t: 'Você fez deploy na sexta-feira às 18h e derrubou o sistema de pagamentos inteiro.', ch: [
+    { l: 'Assumir o erro e virar a noite consertando', f: () => { S.job.perf += 5; return 'Às 4h da manhã voltou tudo. O CTO te respeitou pela honestidade.' + fx({ stress: 15, health: -3 }); } },
+    { l: 'Culpar o estagiário', f: () => { S.job.perf -= 5; return chance(0.5) ? 'Colou. O estagiário foi "realocado".' + fx({ happy: -3 }) : 'O git blame mostrou seu nome. Constrangimento épico.' + fx({ happy: -10, stress: 10 }); } }] },
+  { id: 'gringo', a: [20, 60], c: () => hasDegree('computacao') && S.flags.english >= 2 && !(S.job && S.job.id === 'devgringa'), t: 'Um recrutador gringo te chamou no LinkedIn: vaga remota, pagamento em dólar.', ch: [
+    { l: 'Aceitar a proposta', f: () => { const d = JOBS.find(j => j.id === 'devgringa'); startJob(d, { salary: rnd(18, 32) * 1000 }); return 'Agora você ganha em dólar e trabalha de pijama. Bem-vind' + oa() + ' à classe "dev gringa".' + fx({ happy: 15 }); } },
+    { l: 'Recusar', f: () => 'Você preferiu ficar onde está.' }] },
+  { id: 'layoff', a: [18, 70], c: () => S.job && ['CLT', 'PJ'].includes(S.job.type), w: 0.8, t: () => `${esc(S.job.company)} anunciou LAYOFF em massa por e-mail às 7h da manhã.`, f: () => { if (chance(0.5)) { const r = fireJob('Desligad' + oa() + ' em layoff em massa.', false); return 'Seu acesso foi bloqueado antes do café. ' + r + fx({ happy: -15, stress: 15 }); } return 'Você sobreviveu ao corte... dessa vez. Mas agora faz o trabalho de 3 pessoas.' + fx({ stress: 12 }); } },
+  { id: 'ideia', a: [20, 70], c: () => !!S.job, t: 'Seu chefe apresentou SUA ideia na reunião de diretoria como se fosse dele.', ch: [
+    { l: 'Expor ele na reunião', f: () => chance(0.5) ? (S.job.perf += 10, 'A diretoria ficou do seu lado. O chefe ficou vermelho.' + fx({ happy: 10 })) : (S.job.perf -= 15, 'Você foi visto como "difícil de trabalhar".' + fx({ stress: 10 })) },
+    { l: 'Engolir e seguir', f: () => 'Você anotou mentalmente. A vingança é um prato que se come frio.' + fx({ happy: -6, stress: 6 }) }] },
+  { id: 'funcmes', a: [16, 75], c: () => S.job && S.job.perf > 60, t: 'Você foi eleit' + 'o(a) funcionári' + 'o(a) do mês!', f: () => { S.job.perf += 8; liAch(`🏅 Eleit${oa()} destaque do mês (${S.year}).`); return 'Sua foto está no mural ao lado do bebedouro.' + fx({ happy: 8, money: 500 }); } },
+  { id: 'clientefamoso', a: [24, 80], c: () => S.job && S.job.field === 'Direito', t: 'Um jogador de futebol famoso quer que você defenda ele num caso polêmico.', ch: [
+    { l: 'Aceitar o caso', f: () => chance(0.55) ? (liAch(`⚖️ Vitória em caso de grande repercussão nacional (${S.year}).`), S.job.perf += 15, 'Vitória! Você apareceu em todos os jornais.' + fx({ money: 40000, happy: 12 })) : 'Perdeu o caso e a torcida inteira te odeia.' + fx({ stress: 15, happy: -8 }) },
+    { l: 'Recusar', f: () => 'Você evitou a dor de cabeça.' }] },
+  { id: 'chefetoxic', a: [16, 75], c: () => S.job && S.job.type !== 'informal', t: 'Seu novo gestor manda mensagem no WhatsApp às 23h exigindo relatórios "pra ontem".', ch: [
+    { l: 'Responder na hora', f: () => { S.job.perf += 6; return 'Ele adorou. Agora manda mensagem às 2h também.' + fx({ stress: 10 }); } },
+    { l: 'Responder só no horário comercial', f: () => { S.job.perf -= 4; return 'Você tem direito à desconexão. Ele ficou bravo.' + fx({ stress: -3, happy: 3 }); } },
+    { l: 'Denunciar ao RH por assédio moral', f: () => chance(0.5) ? 'O RH agiu e o gestor foi advertido.' + fx({ happy: 8 }) : 'O RH "vai analisar". Nada aconteceu.' + fx({ stress: 6 }) }] },
+  { id: 'justacausa', a: [16, 75], w: 0.5, c: () => S.job && S.job.type === 'CLT' && S.job.perf < 30, t: 'Você foi pego dormindo no expediente pela terceira vez. O RH te chamou.', f: () => { const r = fireJob('Desídia no trabalho.', true); return 'Demissão por JUSTA CAUSA. ' + r + fx({ happy: -15, stress: 12 }); } },
+  { id: 'viralinfluencer', a: [15, 60], c: () => S.job && S.job.id === 'influencer', t: 'Uma marca grande te chamou para uma campanha nacional.', f: () => { S.job.perf += 20; return 'Publi fechada! Cachê gordo.' + fx({ money: rnd(5, 50) * 1000, happy: 10 }); } },
+  { id: 'hitmusico', a: [16, 60], c: () => S.job && S.job.id === 'musico', t: 'Um vídeo seu cantando no barzinho viralizou.', f: () => { if (chance(0.5)) promote(); return 'Os shows lotaram!' + fx({ happy: 12, money: rnd(3000, 15000) }); } },
+  /* ---------- relacionamentos ---------- */
+  { id: 'casar', a: [20, 70], c: () => P() && P().status === 'namoro' && P().rel > 60 && P().years >= 2, t: () => `${pn()} está te dando indiretas sobre casamento. Aliança no carrinho do e-commerce aberto no seu notebook...`, ch: [
+    { l: 'Pedir em casamento', f: () => { proposeMarriage(); return ''; } },
+    { l: 'Desconversar', f: () => { P().rel -= 15; return 'Clima pesado em casa.' + fx({ happy: -5, stress: 6 }); } }] },
+  { id: 'traicao', a: [18, 80], c: () => !!P(), w: 0.7, t: () => `Você descobriu que ${pn()} está te traindo com ${pick(['o personal trainer', 'a colega do pilates', 'o(a) ex', 'alguém do trabalho', 'o entregador do iFome'])}.`, ch: [
+    { l: 'Perdoar', f: () => { P().rel -= 20; return 'Você perdoou. Mas nunca esqueceu.' + fx({ happy: -12, stress: 12 }); } },
+    { l: 'Terminar na hora', f: () => { breakup(true); return ''; } },
+    { l: 'Expor nas redes sociais', f: () => { breakup(true); return 'O fio no X teve 2 milhões de visualizações.' + fx({ happy: 5, stress: 10 }); } }] },
+  { id: 'gravidez', a: [18, 46], w: 0.8, c: () => P() && P().age < 48 && S.children.length < 6, t: () => `${pn()} chegou com um teste de gravidez POSITIVO na mão!`, ch: [
+    { l: 'Comemorar!', f: () => { newChild(true); return 'O bebê nasceu saudável! Sua vida nunca mais será a mesma.' + fx({ happy: 15, stress: 12 }); } },
+    { l: 'Entrar em pânico (mas encarar)', f: () => { newChild(true); return 'Você hiperventilou, mas segurou a mãozinha e se apaixonou.' + fx({ happy: 8, stress: 18 }); } }] },
+  { id: 'sogra', a: [22, 80], c: married, t: 'Sua sogra brigou com o marido e veio "passar uns dias" na sua casa.', ch: [
+    { l: 'Receber de braços abertos', f: () => { P().rel += 10; return 'Ela ficou 8 meses e reorganizou sua cozinha inteira.' + fx({ stress: 15 }); } },
+    { l: 'Dar um prazo de uma semana', f: () => { P().rel -= 10; return 'Seu casamento ficou estremecido, mas a casa é sua.' + fx({ stress: 5 }); } }] },
+  { id: 'suspenso', a: [24, 80], c: () => S.children.some(c => c.age >= 6 && c.age <= 17 && c.custody), t: () => { const c = S.children.find(c => c.age >= 6 && c.age <= 17 && c.custody); return `${esc(c.name.split(' ')[0])} foi suspens${oa(c.gender)} da escola por vender figurinhas falsificadas no recreio.`; }, ch: [
+    { l: 'Dar bronca', f: () => fx({ stress: 6 }) + 'Ficou sem videogame por um mês.' },
+    { l: 'Admirar o empreendedorismo', f: () => 'Você ensinou a calcular margem de lucro.' + fx({ happy: 5 }) }] },
+  { id: 'filhoenem', a: [36, 90], c: () => S.children.some(c => c.age === 18), t: () => { const c = S.children.find(c => c.age === 18); return `${esc(c.name.split(' ')[0])} fez o ENEM este ano...`; }, f: () => { const c = S.children.find(c => c.age === 18); if (c.smarts > 70) return `Passou em ${pick(['Medicina na USP', 'Direito na FGV', 'Engenharia na UNICAMP', 'Computação na UFMG'])}! Orgulho imenso!` + fx({ happy: 15 }); if (c.smarts > 40) return `Passou numa particular e vai fazer ${pick(['Administração', 'Publicidade', 'Educação Física'])}.` + fx({ happy: 5 }); return 'Decidiu que vai ser "empreendedor digital". Você está preocupad' + oa() + '.' + fx({ stress: 8 }); } },
+  { id: 'paispedem', a: [25, 70], c: () => parentsAlive() && S.money > 8000, t: 'Seus pais estão com dificuldade de pagar as contas e pediram ajuda.', ch: [
+    { l: 'Ajudar com R$ 5.000', f: () => { S.family.parents.forEach(p => p.rel = clamp(p.rel + 15)); return 'Sua mãe chorou de gratidão.' + fx({ money: -5000, happy: 8 }); } },
+    { l: 'Dizer que não pode', f: () => { S.family.parents.forEach(p => p.rel = clamp(p.rel - 15)); return 'Climão no almoço de domingo.' + fx({ happy: -6, stress: 5 }); } }] },
+  { id: 'sairdecasa', a: [26, 45], c: () => S.housing.kind === 'pais' && parentsAlive(), t: 'Seus pais deram a indireta: "Fulano da sua idade já tem casa própria, né?".', f: () => 'O quarto de infância ficou pequeno pro seu ego.' + fx({ happy: -6, stress: 5 }) },
+  { id: 'ex', a: [20, 90], c: () => S.exes.length > 0, t: () => `Você encontrou ${esc(pick(S.exes).name)} (seu/sua ex) na fila do pão.`, ch: [
+    { l: 'Puxar conversa', f: () => chance(0.3) ? 'Rolou um clima... mas melhor não.' + fx({ happy: 6, stress: 4 }) : 'Conversa constrangedora sobre o tempo.' + fx({ happy: -2 }) },
+    { l: 'Fingir que não viu', f: () => 'Você saiu sem o pão.' + fx({ happy: -3 }) }] },
+  { id: 'neto', a: [40, 100], c: () => S.children.some(c => c.age >= 22) && chance(0.4), t: () => `${esc(S.children.find(c => c.age >= 22).name.split(' ')[0])} te deu a notícia: você vai ser avô/avó!`, f: () => { S.flags.grandkids = (S.flags.grandkids || 0) + 1; return 'Você já comprou 40 roupinhas.' + fx({ happy: 15 }); } },
+  /* ---------- velhice ---------- */
+  { id: 'inssfila', a: [60, 90], c: () => !S.retired, t: 'Você foi ao INSS ver sua aposentadoria e pegou senha 487. Atendimento na 12.', f: () => 'Volte em 4 meses com documentos que ninguém te avisou.' + fx({ stress: 10 }) },
+  { id: 'netflix', a: [60, 100], t: 'Você descobriu os vídeos de receitas no YouTube e agora manda 40 por dia no grupo da família.', f: () => 'Você é feliz assim.' + fx({ happy: 8 }) },
+  { id: 'baile', a: [60, 100], t: 'Baile da terceira idade no clube!', ch: [
+    { l: 'Dançar até o fim', f: () => 'Você foi rei/rainha do forró.' + fx({ happy: 12, health: 3 }) },
+    { l: 'Ficar só olhando', f: () => fx({ happy: 2 }) + 'Foi bom mesmo assim.' }] }
+];
+
+/* =========================================================
+   MOTOR DE TEMPO
+   ========================================================= */
+function marketYear() {
+  const m = S.market;
+  m.selic = Math.round(clamp(m.selic + gauss() * 1.3, 2, 16) * 100) / 100;
+  m.bolsa = Math.round((gauss() * 22 + 5) * 10) / 10;
+  m.fii = Math.round((gauss() * 9 - 1) * 10) / 10;
+  if (chance(0.06)) { m.bolsa = -rnd(25, 45); m.crash = true; } else m.crash = false;
+}
+
+function ageUp() {
+  if (!S || !S.alive) return;
+  if (!$('modal').classList.contains('hidden')) return;
+  const invBefore = sum(Object.values(S.inv));
+  S.age++; S.year++;
+  S.energy = ENERGY_PER_YEAR;
+  logEntry();
+  marketYear();
+
+  /* ----- meses ----- */
+  let yInc = 0, yExp = 0;
+  for (let m = 0; m < 12; m++) {
+    const b = budget();
+    S.money += b.net; yInc += sum(b.inc.map(x => x[1])); yExp += sum(b.exp.map(x => x[1]));
+    if (!S.uni && S.fies.debt > 0 && S.fies.payment > 0) { S.fies.debt = Math.max(0, S.fies.debt - S.fies.payment); if (!S.fies.debt) { S.fies.payment = 0; addLog('🎓 FIES quitado!'); } }
+    if (S.job && S.prison === 0) { const p = payroll(S.job.salary, S.job.type); if (p.fgts) { S.fgts += p.fgts; S.job.fgtsJob += p.fgts; } }
+    if (S.home && S.home.fin) {
+      const f = S.home.fin, i = f.balance * f.rate;
+      f.balance = Math.max(0, f.balance - (f.payment - i)); f.months--;
+      if (f.balance <= 1 || f.months <= 0) { S.home.fin = null; addLog('🏠 Você QUITOU o financiamento do imóvel!', 'text-emerald-300'); }
+    }
+    const iv = S.inv, mk = S.market;
+    // valores em termos reais: desconta-se inflação (~4,5% a.a.) dos rendimentos
+    iv.cdb *= 1 + Math.max(0, mk.selic * 0.85 - 4.5) / 100 / 12;
+    iv.tesouro *= 1 + Math.max(0, (mk.selic + 0.4) * 0.85 - 4.5) / 100 / 12 + gauss() * 0.002;
+    iv.acoes *= Math.pow(1 + mk.bolsa / 100, 1 / 12) * (1 + gauss() * 0.025);
+    iv.fii *= Math.pow(1 + mk.fii / 100, 1 / 12);
+    if (S.unemp.months > 0) S.unemp.months--;
+    if (S.money < 0) S.money *= 1.015; // juros do cheque especial/cartão
+  }
+  const invAfter = sum(Object.values(S.inv));
+  S.lastYear = { inc: yInc, exp: yExp, inv: invAfter - invBefore };
+  if (S.money < -1000) { addLog(`💳 Você está no vermelho (${brl(S.money)}). Juros do cheque especial estão te engolindo.`, 'text-rose-300'); fx({ stress: 8, happy: -4 }); }
+
+  /* ----- fim de ano: 13º, férias, IPVA ----- */
+  if (S.job && S.prison === 0 && (S.job.type === 'CLT' || S.job.type === 'estatutario')) {
+    const d13 = payroll(S.job.salary, S.job.type).net, fer = S.job.salary / 3 * 0.85;
+    S.money += d13 + fer;
+    if (S.job.type === 'CLT') { S.fgts += S.job.salary * 0.08; S.job.fgtsJob += S.job.salary * 0.08; }
+    addLog(`💰 13º salário (${brl(d13)}) + 1/3 de férias (${brl(fer)}) caíram na conta. 30 dias de férias!`, 'text-emerald-300');
+    S.st.stress = clamp(S.st.stress - 6);
+  }
+  if (S.vehicles.length) {
+    const ipva = sum(S.vehicles.map(v => v.value * 0.04));
+    S.money -= ipva;
+    S.vehicles.forEach(v => v.value = Math.round(v.value * 0.9));
+    addLog(`🚗 IPVA + licenciamento pagos: ${brl(ipva)}.`);
+  }
+  if (S.home) S.home.value = Math.round(S.home.value * (1 + (gauss() * 4 + 4) / 100));
+  if (S.market.crash && S.inv.acoes > 0) addLog('📉 CRASH NA BOLSA! O Ibovespa derreteu este ano.', 'text-rose-300');
+
+  /* ----- prisão ----- */
+  if (S.prison > 0) {
+    S.prison--;
+    addLog(S.prison > 0 ? `🔒 Mais um ano atrás das grades. Faltam ${S.prison} ano(s).` : '🔓 Você cumpriu sua pena e foi solt' + oa() + '!', S.prison > 0 ? 'text-rose-300' : 'text-emerald-300');
+    fx({ happy: -8, stress: 6, health: -2 });
+  }
+
+  /* ----- família ----- */
+  S.family.parents.concat(S.family.siblings).forEach(p => {
+    if (!p.alive) return;
+    p.age++;
+    const pd = p.age > 60 ? (p.age - 60) * 0.008 : 0.001;
+    if (chance(pd)) {
+      p.alive = false;
+      addLog(`🕊️ ${p.role === 'Mãe' ? 'Sua mãe' : p.role === 'Pai' ? 'Seu pai' : 'Seu/sua ' + p.role.toLowerCase()} ${esc(p.name)} faleceu aos ${p.age} anos.`, 'text-slate-400');
+      fx({ happy: -20, stress: 12 });
+      if (p.role === 'Mãe' || p.role === 'Pai') {
+        const h = { pobre: rnd(0, 10000), media: rnd(30000, 250000), rica: rnd(400000, 3000000) }[S.familyClass] / (S.family.siblings.length + 1) / (parentsAlive() ? 2 : 1);
+        if (h > 100 && S.age >= 18) { S.money += h; addLog(`📜 Herança recebida: ${brl(h)}.`); }
+        if (!parentsAlive() && S.age >= 18 && !S.home && S.housing.kind === 'pais') {
+          const v = { pobre: 140000, media: 450000, rica: 2800000 }[S.familyClass];
+          S.home = { id: 'herdada', name: 'Casa herdada dos pais', value: v, fin: null };
+          S.housing = { kind: 'propria' };
+          addLog(`🏚️ Você herdou a casa da família (${brl(v)}) e agora mora nela.`);
+        }
+      }
+    }
+  });
+  if (S.partner) {
+    S.partner.age++; S.partner.years = (S.partner.years || 0) + 1;
+    S.partner.rel = clamp(S.partner.rel + rnd(-8, 4));
+    if (S.partner.rel < 15 && chance(0.5)) { addLog(`💔 ${esc(S.partner.name)} disse que não te ama mais e foi embora.`, 'text-rose-300'); breakup(false, true); }
+  }
+  S.children.forEach(c => {
+    c.age++; c.rel = clamp(c.rel + rnd(-5, 3));
+    if (c.age === 18) addLog(`🎓 ${esc(c.name)} fez 18 anos e saiu de casa.`);
+  });
+  if (S.flags.babyDue) { S.flags.babyDue = 0; newChild(true); }
+  if (S.country !== 'Brasil' && S.age === 3) { S.city = pick(BR_CITIES); addLog(`✈️ Sua família se mudou de ${S.country} para ${S.city}, no Brasil.`); }
+
+  /* ----- escola ----- */
+  if (S.age === 6) { S.school = { name: S.familyClass === 'rica' ? pick(['Colégio Bandeirantes do Sul', 'Escola Internacional Saint Paul\'s-ish', 'Colégio Santo Anjo']) : S.familyClass === 'media' ? pick(['Colégio Objetivo-Ativo', 'Escola Adventista', 'Colégio Marista do Bairro']) : pick(['E.E. Prof. João Batista', 'E.M. Tia Cotinha', 'Escola Estadual Dom Pedro II']) }; addLog(`🎒 Primeiro dia de aula no ${S.school.name}!`); }
+  if (inSchool() && S.age >= 6) {
+    const g = r10(S.st.smarts / 10 * 0.55 + 3.2 + S.studyBoost * 0.7 - (S.st.stress > 70 ? 1.2 : 0) + (S.familyClass === 'rica' ? 0.4 : 0) + gauss() * 1.1);
+    S.grades.push({ age: S.age, label: schoolLabel(S.age), g });
+    addLog(`📝 Boletim (${schoolLabel(S.age)}): média <b>${g.toFixed(1)}</b>.`, g >= 7 ? 'text-sky-300' : g < 5 ? 'text-rose-300' : '');
+    if (g >= 8.5) fx({ happy: 4 }); if (g < 5) fx({ happy: -4, stress: 4 });
+    if (S.age === 17) { S.highSchool = true; addLog('🎓 Você concluiu o Ensino Médio!', 'text-emerald-300'); }
+  } else if (S.age === 18 && !S.highSchool && !S.flags.droppedSchool) { S.highSchool = true; }
+  S.studyBoost = 0;
+
+  /* ----- faculdade ----- */
+  if (S.uni && S.prison === 0) {
+    const u = S.uni; u.done++;
+    const cr = r10(S.st.smarts / 10 * 0.6 + 2.8 + (u.boost || 0) * 0.7 + gauss() * 1.0); u.cr.push(cr); u.boost = 0;
+    fx({ stress: 4 });
+    if (u.payer === 'fies') S.fies.debt += u.fee * 12;
+    if (u.payer === 'self' && S.money < 0) { u.payer = 'fies'; addLog('🧾 Você não conseguiu pagar as mensalidades e migrou o curso para o FIES.', 'text-amber-300'); }
+    if (u.done >= u.years) {
+      const avg = u.cr.reduce((a, b) => a + b, 0) / u.cr.length;
+      S.degrees.push({ course: u.course, uniName: u.uniName, prest: u.prest, start: u.start, end: S.year, cr: Math.round(avg * 10) / 10 });
+      addLog(`🎓 FORMATURA! Você se formou em <b>${COURSES[u.course].name}</b> pela ${u.uniName} (CR ${avg.toFixed(1)}).`, 'text-emerald-300');
+      if (u.course === 'medicina') { S.flags.crm = 1; addLog('🩺 Registro no CRM ativo.'); }
+      if (u.course === 'odonto') { S.flags.cro = 1; addLog('🦷 Registro no CRO ativo.'); }
+      if (S.fies.debt > 0) { S.fies.payment = Math.round(S.fies.debt / 120); addLog(`📄 Seu FIES (${brl(S.fies.debt)}) começa a ser cobrado: ${brl(S.fies.payment)}/mês.`); }
+      if (S.job && S.job.id === 'estagio') endJob('Estágio concluído', 'Encerrou o estágio ao se formar.', 'quit');
+      S.uni = null; fx({ happy: 15 });
+    } else addLog(`📚 ${u.done}º ano de ${COURSES[u.course].name} concluído (CR ${cr.toFixed(1)}).`);
+  }
+
+  /* ----- trabalho ----- */
+  if (S.job && S.prison === 0) {
+    const j = S.job; j.years++;
+    S.salarySum += j.salary; S.salaryYears++;
+    if (['CLT', 'PJ', 'estatutario'].includes(j.type)) S.contribYears++;
+    j.perf = clamp(j.perf + gauss() * 8 + (S.st.smarts - 50) / 25 - (S.st.stress > 75 ? 6 : 0) + S.workBoost * 6 + (S.st.happy > 60 ? 2 : -2));
+    S.workBoost = 0;
+    fx({ stress: j.stress - 4 });
+    if (j.residency) {
+      j.residency.left--;
+      if (j.residency.left <= 0) {
+        S.flags.specialty = j.residency.spec;
+        liAch(`🩺 Concluiu residência médica em ${j.residency.spec}.`);
+        endJob('Residência concluída', `Título de especialista em ${j.residency.spec}.`, 'quit');
+        addLog(`🩺 Você agora é especialista em <b>${S.flags.specialty}</b>! Procure vagas de Médico(a) Especialista.`, 'text-emerald-300');
+      }
+    } else {
+      if (j.type === 'informal') { j.salary = Math.max(300, Math.round(j.salary * (0.82 + Math.random() * 0.4))); }
+      else if (j.type !== 'bolsa') { const d = 1.005 + Math.random() * 0.02; j.salary = Math.round(j.salary * d); } // aumento real (acima da inflação)
+      if (j.perf > 74 && chance(0.45)) promote();
+      else if (j.type === 'estatutario' && j.years % 5 === 0 && j.level < j.ladder.length - 1) promote();
+      if (S.job) {
+        if (j.type === 'estatutario') { if (j.perf < 5 && chance(0.1)) { fireJob('Exonerad' + oa() + ' após processo administrativo.', true); } }
+        else if (j.perf < 25 && chance(0.45)) { const r = fireJob('Desempenho abaixo do esperado.', false); addLog('Você foi demitid' + oa() + ' por desempenho. ' + r, 'text-rose-300'); fx({ happy: -12, stress: 8 }); }
+      }
+    }
+  } else if (!S.job && S.age >= 18 && S.age < 60 && !S.uni && !S.retired && !S.business && S.prison === 0) { fx({ stress: 3, happy: -3 }); }
+  else fx({ stress: -4 });
+
+  /* ----- negócio próprio ----- */
+  if (S.business && S.prison === 0) {
+    const b = S.business, def = BUSINESSES.find(x => x.id === b.id);
+    b.years++;
+    b.rep = clamp(b.rep + gauss() * 8 + (S.st.smarts - 50) / 20 + (def.boost && hasDegree(def.boost) ? 3 : 0));
+    b.profitM = Math.round(def.base * (b.rep / 50 - 0.45 + gauss() * def.vol * 0.5));
+    b.value = Math.max(0, Math.round(b.value * (1 + (b.rep - 45) / 100 + gauss() * def.vol * 0.25)));
+    S.contribYears++;
+    fx({ stress: 5 });
+    addLog(`🏪 ${b.name}: reputação ${Math.round(b.rep)}/100, lucro de ${brl(b.profitM)}/mês, valor estimado ${brl(b.value)}.`);
+    if (b.rep < 8 && chance(0.6)) { addLog(`💥 ${b.name} faliu.`, 'text-rose-300'); const e = liEntry(b.lid); if (e) { e.end = S.year; e.status = 'Anterior'; e.ach.push('Empresa encerrou as atividades (falência).'); } S.business = null; fx({ happy: -15, stress: 15 }); }
+  }
+
+  /* ----- saúde ----- */
+  if (S.age > 45) fx({ health: -rnd(0, 2) });
+  if (S.age > 65) fx({ health: -rnd(1, 4), looks: -rnd(0, 2) });
+  if (S.age > 30) fx({ looks: -rnd(0, 1) });
+  if (S.age < 25 && S.age > 3) fx({ health: rnd(0, 2) });
+  S.illnesses = S.illnesses.filter(i => {
+    const p = S.age < 18 && parentsAlive() ? 0.6 : 0.25; // menores: os pais levam ao médico
+    if (chance(p)) { addLog(`🩹 Você se recuperou de ${i.name}.`, 'text-emerald-300'); return false; }
+    return true;
+  });
+  S.illnesses.forEach(i => fx({ health: -Math.ceil(i.drain * 0.6), happy: -1 }));
+  if (!S.illnesses.length && S.st.health < 60 && S.age < 70) fx({ health: rnd(1, 4) });
+  // regressão natural: o corpo e a mente se recuperam um pouco a cada ano
+  S.st.stress = clamp(S.st.stress + (25 - S.st.stress) * 0.18);
+  S.st.happy = clamp(S.st.happy + (55 - S.st.happy) * 0.08);
+  if (S.st.stress > 80) { fx({ health: -3, happy: -4 }); if (chance(0.15)) addIllness(pick(['Gastrite nervosa', 'Pressão alta', 'Burnout'])); }
+  if (S.st.happy < 15 && S.age > 12) { fx({ health: -3 }); addLog('🌧️ Você anda muito pra baixo. Talvez terapia ajude.', 'text-slate-400'); }
+
+  /* ----- morte ----- */
+  if (S.st.health <= 0) die(S.illnesses.length ? `complicações de ${S.illnesses[0].name.toLowerCase()}` : 'saúde debilitada');
+  else if (S.age >= 68 && chance((S.age - 64) * 0.011 + (100 - S.st.health) / 700)) die(pick(['causas naturais, dormindo tranquilamente', 'parada cardíaca', 'causas naturais após um almoço de domingo']));
+  else if (S.age >= 112) die('velhice extrema (recorde brasileiro!)');
+  else if (chance(0.0015)) die(pick(['um coco que caiu na sua cabeça na praia', 'acidente bizarro com um patinete elétrico', 'engasgo com pão de queijo']));
+
+  /* ----- marcos ----- */
+  if (S.age === 18) addLog('🔞 Maioridade! Agora você pode trabalhar, morar sozinh' + oa() + ', dirigir e se endividar legalmente.', 'text-violet-300');
+  if (S.age === 16) addLog('🗳️ Você já pode tirar título de eleitor.');
+  if (S.age >= 18 && S.prospects.length && chance(0.4)) S.prospects.shift();
+
+  /* ----- eventos ----- */
+  if (S.alive && S.prison === 0) rollEvents();
+  else if (S.alive && S.prison > 0 && chance(0.4)) Q.push({ id: 'cadeia', t: 'Na cadeia, um colega de cela te chamou para entrar na facção.', ch: [{ l: 'Recusar educadamente', f: () => 'Você levou uns tapas, mas manteve a dignidade.' + fx({ health: -6 }) }, { l: 'Ler livros pra reduzir pena', f: () => { if (chance(0.5) && S.prison > 0) S.prison--; return 'Remição pela leitura: 4 dias a menos por livro. Você leu 30!' + fx({ smarts: 6 }); } }] });
+
+  render();
+  save();
+  processQueue();
+}
+
+function rollEvents() {
+  let pool = EVENTS.filter(e => S.age >= e.a[0] && S.age <= e.a[1] && !(e.once && S.seen[e.id]) && (!e.c || safeCond(e.c)));
+  const n = S.age < 3 ? (chance(0.6) ? 1 : 0) : chance(0.45) ? 1 : chance(0.65) ? 2 : 3;
+  for (let i = 0; i < n && pool.length; i++) {
+    const tot = sum(pool.map(e => e.w || 1));
+    let r = Math.random() * tot, idx = 0;
+    for (; idx < pool.length; idx++) { r -= pool[idx].w || 1; if (r <= 0) break; }
+    const ev = pool[Math.min(idx, pool.length - 1)];
+    pool = pool.filter(e => e !== ev);
+    Q.push(ev);
+  }
+}
+function safeCond(c) { try { return !!c(); } catch (e) { return false; } }
+
+function processQueue() {
+  if (!S.alive) { render(); save(); return gameOver(); }
+  if (!Q.length) { render(); save(); return; }
+  const ev = Q.shift();
+  if (ev.c && !safeCond(ev.c)) return processQueue();
+  if (ev.id) S.seen[ev.id] = 1;
+  const text = typeof ev.t === 'function' ? ev.t() : ev.t;
+  const title = `📅 ${S.age} anos — ${S.year}`;
+  if (ev.ch) {
+    modal(title, `<p class="text-lg leading-relaxed">${text}</p>`, ev.ch.map(c => ({ l: c.l, fn: () => {
+      const r = c.f();
+      addLog(`${text} → <i>${c.l}</i>. ${stripFx(r)}`);
+      render(); save();
+      if (r) modal('Resultado', `<div class="leading-relaxed">${r}</div>`, [{ l: 'Continuar', v: 'pri', fn: processQueue }]);
+    } })));
+  } else {
+    const r = ev.f();
+    addLog(`${text} ${stripFx(r)}`);
+    render(); save();
+    modal(title, `<p class="text-lg leading-relaxed">${text}</p><div class="mt-3 text-slate-300">${r}</div>`, [{ l: 'Continuar', v: 'pri', fn: processQueue }]);
+  }
+}
+function stripFx(html) { return (html || '').replace(/<div class="fx">(.*?)<\/div>/g, ' <span class="text-slate-500">[$1]</span>').replace(/<div class="mt-2 text-rose-300">/g, '<span>').replace(/<\/div>/g, '</span>'); }
+
+/* =========================================================
+   RELACIONAMENTOS
+   ========================================================= */
+function meetPeople(place, count = 3) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    let g = S.pref === 'all' ? rgender() : S.pref;
+    const age = Math.max(18, S.age + rnd(-6, 6));
+    const looks = rnd(15, 98);
+    out.push({
+      id: 'p' + Date.now() + i + rnd(0, 999), name: rname(g), gender: g, age, looks, smarts: rnd(10, 98), place,
+      attraction: clamp(Math.round(looks * 0.5 + rnd(0, 50))), compat: rnd(5, 99),
+      income: chance(0.15) ? 0 : rnd(15, 150) * 100,
+      job: pick(['Enfermeir@', 'Dev', 'Advogad@', 'Personal trainer', 'Vendedor@', 'Influencer', 'Estudante', 'Engenheir@', 'Professor@', 'Motorista de app', 'Empresári@', 'Dentista', 'Médic@', 'Artista', 'Concurseir@']).replace(/@/g, g === 'F' ? 'a' : g === 'M' ? 'o' : 'e')
+    });
+  }
+  S.prospects = out.concat(S.prospects).slice(0, 6);
+  return out;
+}
+function dumpPartner(toExes = true) { if (S.partner && toExes) S.exes.push({ name: S.partner.name, status: S.partner.status, year: S.year }); S.partner = null; }
+function breakup(cheated = false, silent = false) {
+  const p = S.partner; if (!p) return;
+  if (p.status !== 'casado') {
+    if (!silent) modal('Fim do namoro', `Você terminou com ${esc(p.name)}.${fx({ happy: -10, stress: 6 })}`, [{ l: 'Seguir em frente', v: 'pri' }]);
+    else fx({ happy: -12 });
+    addLog(`💔 Fim do relacionamento com ${esc(p.name)}.`, 'text-rose-300');
+    dumpPartner(); return;
+  }
+  const doDivorce = (lit) => {
+    const assets = Math.max(0, S.money) + sum(Object.values(S.inv));
+    let share = 0, cost = 0, txt = '';
+    if (lit) {
+      cost = rnd(20, 90) * 1000;
+      const win = chance(0.45 + (S.st.smarts - 50) / 200);
+      share = p.regime === 'comunhao' ? (win ? 0.3 : 0.65) : (win ? 0 : 0.15);
+      txt = `Divórcio LITIGIOSO: 2 anos de audiência, advogados caros (${brl(cost)}). ${win ? 'Você saiu na vantagem!' : 'O juiz ficou do lado de ' + esc(p.name.split(' ')[0]) + '.'}`;
+      fx({ stress: 25, happy: -15 });
+    } else {
+      cost = 3500;
+      share = p.regime === 'comunhao' ? 0.5 : 0;
+      txt = `Divórcio amigável em cartório (${brl(cost)}).`;
+      fx({ stress: 10, happy: -10 });
+    }
+    const loss = assets * share;
+    if (loss > 0) { const ratio = loss / assets; S.money = S.money > 0 ? S.money * (1 - ratio) : S.money; for (const k in S.inv) S.inv[k] *= (1 - ratio); }
+    S.money -= cost;
+    if (S.home && p.regime === 'comunhao') { S.money += 0; txt += ' O imóvel foi partilhado: você ficou com ele, mas pagou metade da parte quitada ao ex.'; const eq = S.home.value - (S.home.fin ? S.home.fin.balance : 0); S.money -= eq * 0.5 * (lit ? share / 0.5 : 1); }
+    let kidsTxt = '';
+    S.children.filter(c => c.age < 18 && c.custody && c.other === p.name).forEach(c => { if (chance(0.55)) { c.custody = false; kidsTxt += ` A guarda de ${esc(c.name.split(' ')[0])} ficou com ${esc(p.name.split(' ')[0])} — você pagará pensão alimentícia.`; } });
+    txt += ` Regime: ${p.regime === 'comunhao' ? 'comunhão parcial de bens' : 'separação total de bens'}. Partilha: você perdeu ${brl(loss)}.` + kidsTxt;
+    addLog(`⚖️ Divórcio de ${esc(p.name)}. ${txt}`, 'text-rose-300');
+    dumpPartner();
+    render(); save();
+    modal('Divórcio', txt, [{ l: 'Bola pra frente', v: 'pri' }]);
+  };
+  modal('Divórcio', `Como vai ser o divórcio com ${esc(p.name)}? (${p.regime === 'comunhao' ? 'Comunhão parcial de bens' : 'Separação total de bens'})`, [
+    { l: 'Amigável (cartório)', v: 'pri', fn: () => { if (cheated || chance(0.35)) { modal('Não vai ser fácil...', `${esc(p.name.split(' ')[0])} se recusou a fazer amigável e contratou um advogado tubarão.`, [{ l: 'Ir pro litigioso', v: 'dan', fn: () => doDivorce(true) }]); } else doDivorce(false); } },
+    { l: 'Litigioso (brigar na justiça)', v: 'dan', fn: () => doDivorce(true) }
+  ]);
+}
+function proposeMarriage() {
+  const p = S.partner;
+  if (!chance(clamp(p.rel / 100 + 0.15, 0, 0.95))) { p.rel -= 20; modal('💍 Pedido de casamento', `${esc(p.name.split(' ')[0])} disse NÃO na frente de todo mundo no restaurante.` + fx({ happy: -20, stress: 10 }), [{ l: 'Que vergonha...', v: 'pri' }]); render(); save(); return; }
+  modal('💍 Ela/ele disse SIM!', 'Agora escolham o regime de bens e a festa:', [
+    { l: 'Comunhão parcial + casamento no cartório', v: 'pri', fn: () => wed('comunhao', 800) },
+    { l: 'Comunhão parcial + festão (R$ 60 mil)', fn: () => wed('comunhao', 60000) },
+    { l: 'Separação total + cartório', fn: () => wed('separacao', 1200) },
+    { l: 'Separação total + festão (R$ 60 mil)', fn: () => wed('separacao', 60000) }
+  ]);
+}
+function wed(regime, cost) {
+  const p = S.partner; p.status = 'casado'; p.regime = regime; p.rel = clamp(p.rel + 15);
+  S.money -= cost;
+  const t = `Você se casou com ${esc(p.name)}! Regime: ${regime === 'comunhao' ? 'comunhão parcial de bens' : 'separação total de bens'}.`;
+  addLog('💒 ' + t, 'text-pink-300');
+  modal('💒 Casamento', t + fx({ happy: cost > 10000 ? 22 : 15, stress: cost > 10000 ? 8 : 2 }), [{ l: 'Felizes para sempre (?)', v: 'pri' }]);
+  render(); save();
+}
+
+/* =========================================================
+   AÇÕES DO JOGADOR (G.*)
+   ========================================================= */
+function useEnergy(n = 1) {
+  if (S.energy < n) { toast('⚡ Sem energia neste ano. Envelheça para recuperar.'); return false; }
+  S.energy -= n; return true;
+}
+function done(title, html) { render(); save(); if (html) modal(title, html, [{ l: 'OK', v: 'pri' }]); }
+function blockedByPrison() { if (S.prison > 0) { toast('🔒 Você está pres' + oa() + '.'); return true; } return false; }
+
+const ACTIVITIES = {
+  estudar:   { cat: 'Escola', l: '📖 Estudar mais', d: 'Melhora a nota do ano', min: 6, max: 17, c: inSchool, f: () => { S.studyBoost += 1.5; return 'Você estudou como nunca.' + fx({ smarts: rnd(1, 3), stress: 4, happy: -1 }); } },
+  matar:     { cat: 'Escola', l: '🏃 Matar aula', d: 'Diversão > nota', min: 10, max: 17, c: inSchool, f: () => { S.studyBoost -= 1.5; return chance(0.3) ? 'O inspetor te pegou pulando o muro. Bilhete pros pais!' + fx({ happy: -6 }) : 'Fliperama e coxinha. Dia perfeito.' + fx({ happy: 8 }); } },
+  amizade:   { cat: 'Escola', l: '🤝 Fazer amizades', d: 'Felicidade', min: 6, max: 17, c: inSchool, f: () => 'Você fez novos amigos no recreio.' + fx({ happy: rnd(4, 8), stress: -3 }) },
+  esporte:   { cat: 'Escola', l: '⚽ Entrar no time da escola', d: 'Saúde e aparência', min: 8, max: 17, c: inSchool, f: () => chance(0.7) ? 'Você entrou no time de futsal!' + fx({ health: 5, looks: 3, happy: 5 }) : 'Não passou na peneira.' + fx({ happy: -5 }) },
+  largar:    { cat: 'Escola', l: '🚪 Largar a escola', d: 'Péssima ideia', min: 15, max: 17, c: inSchool, f: () => { S.flags.droppedSchool = 1; return 'Você largou os estudos. Sem Ensino Médio, as portas fecham. (Pode fazer supletivo/EJA depois.)' + fx({ happy: 5, smarts: -5 }); } },
+  eja:       { cat: 'Estudos', l: '📘 Supletivo / EJA', d: 'Concluir o Ensino Médio', min: 18, max: 99, c: () => !S.highSchool, f: () => { S.highSchool = true; S.flags.droppedSchool = 0; return 'Você concluiu o Ensino Médio pelo EJA! Orgulho.' + fx({ smarts: 4, happy: 10 }); } },
+  cursinho:  { cat: 'Estudos', l: '🧾 Cursinho pré-ENEM (R$ 1.500)', d: 'Aumenta a nota do ENEM', min: 15, max: 99, c: () => !S.uni, cost: 1500, f: () => { S.enemPrep = Math.min(6, S.enemPrep + 1); return `Você fez um semestre de cursinho. Preparação ENEM: ${S.enemPrep}/6.` + fx({ smarts: 2, stress: 5 }); } },
+  estudarsozinho: { cat: 'Estudos', l: '📚 Estudar pro ENEM sozinho', d: 'Grátis, rende menos', min: 14, max: 99, c: () => !S.uni, f: () => { S.enemPrep = Math.min(6, S.enemPrep + 0.5); return `Videoaulas no YouTube até 2h da manhã. Preparação ENEM: ${S.enemPrep}/6.` + fx({ smarts: 1, stress: 3 }); } },
+  facestudar:{ cat: 'Faculdade', l: '📐 Estudar pras provas da facul', d: 'Melhora o CR', min: 16, max: 99, c: () => !!S.uni, f: () => { S.uni.boost = (S.uni.boost || 0) + 1.5; return 'Biblioteca até fechar.' + fx({ smarts: 2, stress: 5 }); } },
+  festauni:  { cat: 'Faculdade', l: '🍻 Festa universitária', d: 'Conhecer gente', min: 16, max: 99, c: () => !!S.uni, f: () => { meetPeople('faculdade', 2); return 'Open bar de vodka barata. Você conheceu gente nova (veja Relacionamentos).' + fx({ happy: 10, health: -3 }); } },
+  ic:        { cat: 'Faculdade', l: '🔬 Iniciação científica', d: 'Currículo + inteligência', min: 16, max: 99, c: () => !!S.uni && !S.flags.ic, f: () => { S.flags.ic = 1; return 'Você publicou um artigo sobre fungos do cerrado. Seu orientador te ama.' + fx({ smarts: 7, stress: 6 }); } },
+  ingles:    { cat: 'Estudos', l: '🇺🇸 Curso de inglês (R$ 3.000)', d: 'Abre vagas gringas', min: 8, max: 99, c: () => S.flags.english < 3, cost: 3000, f: () => { S.flags.english++; return `Seu inglês agora é: ${['Nenhum', 'Básico', 'Intermediário', 'Fluente'][S.flags.english]}.` + fx({ smarts: 3 }); } },
+  concurso:  { cat: 'Estudos', l: '📑 Estudar para concurso', d: 'Prepara para concursos públicos', min: 16, max: 99, f: () => { S.concursoPrep = Math.min(8, S.concursoPrep + 1); return `Apostilas e simulados. Preparação para concursos: ${S.concursoPrep}/8.` + fx({ smarts: 2, stress: 6, happy: -2 }); } },
+  academia:  { cat: 'Saúde & Visual', l: '🏋️ Academia (R$ 150)', d: 'Saúde e aparência', min: 12, max: 99, cost: 150, f: () => chance(0.05) ? 'Você tentou supino com 100kg e se machucou.' + fx({ health: -8 }) : 'Treino pago, foto no espelho postada.' + fx({ health: rnd(3, 6), looks: rnd(1, 3), stress: -4 }) },
+  correr:    { cat: 'Saúde & Visual', l: '🏃 Correr no parque', d: 'Grátis', min: 8, max: 99, f: () => 'Você correu 5km e quase vomitou. Mas valeu.' + fx({ health: rnd(2, 4), stress: -3 }) },
+  medicosus: { cat: 'Saúde & Visual', l: '🏥 Médico do SUS (grátis)', d: 'Tratar doenças (fila)', min: 0, max: 120, c: () => S.illnesses.length > 0, f: () => treat(false) },
+  medicopart:{ cat: 'Saúde & Visual', l: '🩺 Médico particular', d: 'Tratar doenças (caro)', min: 0, max: 120, c: () => S.illnesses.length > 0, f: () => treat(true) },
+  terapia:   { cat: 'Saúde & Visual', l: '🛋️ Terapia (R$ 250)', d: 'Reduz estresse', min: 10, max: 120, cost: 250, f: () => 'Você falou da sua mãe por 50 minutos.' + fx({ stress: -rnd(10, 18), happy: rnd(3, 7) }) },
+  meditar:   { cat: 'Saúde & Visual', l: '🧘 Meditar', d: 'Grátis', min: 8, max: 120, f: () => 'Você meditou 10 minutos e pensou em boletos o tempo todo.' + fx({ stress: -rnd(4, 9) }) },
+  harmon:    { cat: 'Saúde & Visual', l: '💉 Harmonização facial (R$ 4.000)', d: 'Aparência (risco)', min: 18, max: 80, cost: 4000, f: () => chance(0.2) ? 'Ficou parecendo um emoji derretido.' + fx({ looks: -12, happy: -12 }) : 'Mandíbula marcada, autoestima lá em cima.' + fx({ looks: rnd(6, 12), happy: 6 }) },
+  plastica:  { cat: 'Saúde & Visual', l: '🔪 Cirurgia plástica (R$ 18.000)', d: 'Aparência (risco)', min: 18, max: 80, cost: 18000, f: () => { if (chance(0.03)) { die('complicações em cirurgia plástica'); return 'Algo deu muito errado na cirurgia...'; } return chance(0.15) ? 'O resultado ficou "diferente". Bem diferente.' + fx({ looks: -8, happy: -10, health: -5 }) : 'Resultado de revista!' + fx({ looks: rnd(12, 20), happy: 10, health: -4 }); } },
+  balada:    { cat: 'Lazer', l: '🪩 Balada (R$ 200)', d: 'Felicidade + conhecer gente', min: 16, max: 70, cost: 200, f: () => { const r = Math.random(); if (r < 0.1) return 'Você brigou na fila do banheiro e foi expuls' + oa() + '.' + fx({ happy: -5, health: -4 }); meetPeople('balada', 2); return 'Dançou até as 5h. Conheceu gente nova (veja Relacionamentos).' + fx({ happy: rnd(6, 12), health: -2 }); } },
+  viagemnac: { cat: 'Lazer', l: '🏖️ Viagem nacional (R$ 3.000)', d: 'Relaxar', min: 14, max: 99, cost: 3000, f: () => `Você foi para ${pick(['Porto de Galinhas', 'Jericoacoara', 'Gramado', 'Bonito', 'Fernando de Noronha (no cartão)', 'Chapada Diamantina'])}.` + fx({ happy: rnd(10, 16), stress: -rnd(10, 18) }) },
+  viageminter:{ cat: 'Lazer', l: '✈️ Viagem internacional (R$ 15.000)', d: 'Relaxar muito', min: 16, max: 99, cost: 15000, f: () => `Você foi para ${pick(['Paris', 'Orlando', 'Lisboa', 'Tóquio', 'Buenos Aires', 'Cancún'])} e voltou com 3 malas de compras.` + fx({ happy: rnd(15, 25), stress: -rnd(15, 25), smarts: 2 }) },
+  ler:       { cat: 'Lazer', l: '📕 Ler um livro', d: 'Inteligência', min: 6, max: 120, f: () => `Você leu "${pick(['Dom Casmurro', 'Grande Sertão: Veredas', 'O Alquimista', 'Pai Rico, Pai Pobre', 'Capitães da Areia', 'Torto Arado'])}".` + fx({ smarts: rnd(2, 4), stress: -2 }) },
+  videogame: { cat: 'Lazer', l: '🎮 Jogar videogame', d: 'Felicidade', min: 4, max: 99, f: () => 'Você virou a noite jogando.' + fx({ happy: rnd(4, 8), health: -1 }) },
+  igreja:    { cat: 'Lazer', l: '⛪ Ir à igreja/templo', d: 'Paz interior', min: 5, max: 120, f: () => 'Você se sentiu em paz.' + fx({ happy: 4, stress: -5 }) },
+  mega:      { cat: 'Sorte & Azar', l: '🍀 Jogar na Mega-Sena (R$ 6)', d: 'Sonhar não custa (quase) nada', min: 18, max: 120, cost: 6, f: () => { const r = Math.random(); if (r < 1 / 15000) { const v = rnd(30, 250) * 1000000; return `🎉🎉🎉 VOCÊ GANHOU SOZINH${oa().toUpperCase()} NA MEGA-SENA: ${brl(v)}!!!` + fx({ money: v, happy: 50 }); } if (r < 1 / 400) return 'Quina! Você ganhou R$ 35.000!' + fx({ money: 35000, happy: 15 }); if (r < 1 / 20) return 'Quadra! R$ 900.' + fx({ money: 900, happy: 5 }); return 'Nada. Mas na semana que vem...' + fx({ happy: -1 }); } },
+  bicho:     { cat: 'Sorte & Azar', l: '🐊 Jogo do bicho (R$ 20)', d: 'Contravenção tradicional', min: 18, max: 120, cost: 20, f: () => chance(1 / 25) ? `Deu ${pick(['jacaré', 'avestruz', 'vaca', 'macaco', 'borboleta'])} na cabeça! R$ 360!` + fx({ money: 360, happy: 6 }) : 'Deu cachorro. Você jogou no gato.' },
+  bet:       { cat: 'Sorte & Azar', l: '📲 Apostar na bet (R$ 500)', d: '45% de chance de dobrar', min: 18, max: 120, cost: 500, f: () => { S.betCount++; const extra = S.betCount > 8 && chance(0.4) ? '<div class="mt-2 text-rose-300">⚠️ Você está apostando demais. Isso está virando vício.</div>' + fx({ stress: 8 }) : ''; return (chance(0.45) ? 'GREEN! Você ganhou R$ 1.000!' + fx({ money: 1000, happy: 6 }) : 'RED. O time tomou gol aos 49 do segundo tempo.' + fx({ happy: -6, stress: 4 })) + extra; } },
+  piramide:  { cat: 'Sorte & Azar', l: '🔺 Entrar num "investimento garantido" (R$ 10.000)', d: 'Esquema duvidoso', min: 18, max: 99, cost: 10000, f: () => { const r = Math.random(); if (r < 0.15) return 'Você saiu antes de desabar. Lucro de R$ 25 mil!' + fx({ money: 35000, happy: 8 }); if (r < 0.25) { S.flags.dirty = (S.flags.dirty || 0) + 1; return 'Você recrutou 40 pessoas e lucrou R$ 60 mil... mas virou alvo do Ministério Público.' + fx({ money: 70000, stress: 15 }); } return 'Era pirâmide. Você perdeu tudo e ainda tem que fugir dos amigos que você indicou.' + fx({ happy: -12, stress: 10 }); } }
+};
+function treat(priv) {
+  const ill = S.illnesses[0];
+  if (priv) {
+    if (S.money < ill.cost) return `O tratamento de ${ill.name} custa ${brl(ill.cost)}. Você não tem dinheiro suficiente.`;
+    S.money -= ill.cost;
+    if (chance(0.88)) { S.illnesses.shift(); return `Tratamento particular de ${ill.name} bem-sucedido! (${brl(ill.cost)})` + fx({ health: 10, happy: 5 }); }
+    return `O médico particular cobrou ${brl(ill.cost)} e disse que "é emocional".` + fx({ stress: 5 });
+  }
+  if (chance(ill.sus)) { S.illnesses.shift(); return `Depois de 7 horas na fila do posto, você foi tratad${oa()} de ${ill.name}. Viva o SUS!` + fx({ health: 8, stress: 4 }); }
+  return 'Fila de 6 meses para o especialista. Volte depois.' + fx({ stress: 6 });
+}
+
+function doActivity(id) {
+  const a = ACTIVITIES[id];
+  if (!a || !S.alive) return;
+  if (S.age < a.min || S.age > a.max || (a.c && !safeCond(a.c))) return toast('Essa atividade não está disponível agora.');
+  if (S.prison > 0 && !['ler', 'meditar', 'correr', 'igreja'].includes(id)) return toast('🔒 Você está pres' + oa() + '.');
+  if (a.cost && S.money < a.cost) return toast(`💸 Você precisa de ${brl(a.cost)}.`);
+  if (!useEnergy()) return;
+  if (a.cost) S.money -= a.cost;
+  const r = a.f();
+  addLog(`${a.l}: ${stripFx(r)}`);
+  done(a.l, r);
+  if (!S.alive) { $('modal').classList.add('hidden'); gameOver(); }
+}
+
+/* ----- ENEM ----- */
+function takeEnem() {
+  if (blockedByPrison()) return;
+  if (S.age < 16) return toast('Você ainda é muito nov' + oa() + ' para o ENEM.');
+  if (S.flags.enemYear === S.year) return toast('O ENEM é só uma vez por ano!');
+  if (!S.highSchool && S.age < 17) return toast('Faça o ENEM no 3º ano do Ensino Médio (17 anos) ou depois.');
+  if (!useEnergy()) return;
+  S.flags.enemYear = S.year;
+  const avgGrade = S.grades.length ? S.grades.slice(-4).reduce((a, b) => a + b.g, 0) / Math.min(4, S.grades.length) : 5;
+  const base = 330 + S.st.smarts * 3.6 + avgGrade * 14 + S.enemPrep * 18 - S.st.stress * 0.5 + (S.familyClass === 'rica' ? 15 : 0);
+  // TRI simplificado: cada área tem dificuldade própria; acertos "chutados" valem menos
+  const area = (bias, sd) => Math.round(clamp(base + bias + gauss() * sd, 300, 990));
+  const areas = {
+    'Linguagens': area(-10, 35), 'Ciências Humanas': area(0, 40), 'Ciências da Natureza': area(-25, 50), 'Matemática': area(15 + (S.st.smarts - 50) * 0.8, 65)
+  };
+  const redacao = Math.round(clamp((base - 150) * 1.15 + gauss() * 90, 0, 1000) / 20) * 20;
+  const score = Math.round((sum(Object.values(areas)) + redacao) / 5);
+  S.enem = { score, areas, redacao, year: S.year };
+  if (!S.enemBest || score > S.enemBest) S.enemBest = score;
+  addLog(`📝 ENEM ${S.year}: média <b>${score}</b> (redação ${redacao}).`, 'text-sky-300');
+  fx({ stress: 6 });
+  const rows = Object.entries(areas).map(([k, v]) => `<div class="flex justify-between"><span>${k}</span><b>${v}</b></div>`).join('') + `<div class="flex justify-between"><span>Redação</span><b>${redacao}</b></div>`;
+  done('Resultado do ENEM', `<div class="space-y-1 text-sm">${rows}</div><div class="mt-3 text-2xl font-bold text-emerald-400">Média: ${score}</div><p class="mt-2 text-slate-400 text-sm">Veja o catálogo de faculdades na aba Carreira para usar sua nota no SISU/ProUni.</p>`);
+}
+
+function enroll(cid, uid) {
+  if (blockedByPrison()) return;
+  const u = UNIS.find(x => x.id === uid), c = COURSES[cid], cut = uniCut(u, cid), fee = uniFee(u, cid);
+  if (S.uni) return toast('Você já está cursando uma faculdade.');
+  if (!S.enem || S.enem.year < S.year - 1 || S.enem.score < cut) return toast('Sua nota do ENEM não alcança a nota de corte.');
+  if (hasDegree(cid)) return toast('Você já tem esse diploma.');
+  const go = payer => {
+    S.uni = { course: cid, uniId: uid, uniName: u.name, prest: u.prest, years: c.years, done: 0, payer, fee, cr: [], start: S.year };
+    S.highSchool = true; S.enemPrep = 0;
+    addLog(`🎉 APROVAD${oa().toUpperCase()}! Você entrou em <b>${c.name}</b> na ${u.name}${payer === 'publica' ? ' (pública, gratuita)' : payer === 'prouni' ? ' com bolsa ProUni integral' : payer === 'fies' ? ' financiado pelo FIES' : payer === 'pais' ? ' (seus pais vão pagar)' : ' pagando do próprio bolso'}.`, 'text-emerald-300');
+    done('🎉 Aprovação!', `Bem-vind${oa()} à ${u.name}! Curso: ${c.name} (${c.years} anos).` + fx({ happy: 18 }));
+  };
+  if (u.type === 'pub') return go('publica');
+  const opts = [{ l: `FIES (financiar ${brl(fee)}/mês, paga depois de formad${oa()})`, fn: () => go('fies') }, { l: `Pagar do bolso (${brl(fee)}/mês)${S.money < fee * 12 ? ' ⚠️ seu saldo não cobre 1 ano' : ''}`, fn: () => go('self') }];
+  if (S.familyClass !== 'rica' && S.enem.score >= cut + 70) opts.unshift({ l: '🎁 Bolsa ProUni integral', v: 'pri', fn: () => go('prouni') });
+  if (parentsAlive() && (S.familyClass === 'rica' || (S.familyClass === 'media' && fee <= 2500))) opts.unshift({ l: '👨‍👩‍👧 Seus pais pagam', v: 'pri', fn: () => go('pais') });
+  opts.push({ l: 'Cancelar', v: 'def' });
+  modal(`${c.icon} ${c.name} — ${u.name}`, `Mensalidade: <b>${brl(fee)}</b>. Como você vai pagar?`, opts);
+}
+function dropUni() {
+  if (!S.uni) return;
+  modal('Trancar faculdade?', 'Você vai abandonar o curso. O tempo cursado não vira diploma.', [
+    { l: 'Trancar', v: 'dan', fn: () => { S.dropped.push({ course: S.uni.course, uniName: S.uni.uniName, start: S.uni.start, end: S.year }); addLog(`🚪 Você trancou ${COURSES[S.uni.course].name} na ${S.uni.uniName}.`); if (S.job && S.job.id === 'estagio') endJob('Estágio encerrado', 'Encerrado ao trancar a faculdade.', 'quit'); S.uni = null; done('Faculdade trancada', 'Você trancou a matrícula.' + fx({ happy: 4, stress: -10 })); } },
+    { l: 'Continuar estudando', v: 'pri' }
+  ]);
+}
+function examOAB() {
+  if (blockedByPrison()) return;
+  if (!hasDegree('direito') && !(S.uni && S.uni.course === 'direito' && S.uni.done >= S.uni.years - 1)) return toast('Precisa estar no último ano ou formad' + oa() + ' em Direito.');
+  if (S.flags.oab) return toast('Você já tem OAB.');
+  if (!useEnergy()) return;
+  S.money -= 300;
+  const p = clamp((S.st.smarts - 35) / 70 + S.concursoPrep * 0.05, 0.05, 0.9);
+  if (chance(p)) { S.flags.oab = 1; addLog('⚖️ APROVAD' + oa().toUpperCase() + ' NO EXAME DA OAB!', 'text-emerald-300'); done('Exame da OAB', 'Você passou na OAB! Agora pode advogar.' + fx({ happy: 15 })); }
+  else { S.flags.oabFails = (S.flags.oabFails || 0) + 1; done('Exame da OAB', `Reprovad${oa()} na 2ª fase. Tentativas: ${S.flags.oabFails}.` + fx({ happy: -8, stress: 6 })); }
+}
+function examResidency() {
+  if (blockedByPrison()) return;
+  if (!hasDegree('medicina')) return toast('Precisa ser formad' + oa() + ' em Medicina.');
+  if (S.flags.specialty || (S.job && S.job.residency)) return toast('Você já fez/está fazendo residência.');
+  if (!useEnergy()) return;
+  const p = clamp((S.st.smarts - 40) / 60 + S.concursoPrep * 0.05 + bestPrest(['medicina']) - 0.9, 0.08, 0.92);
+  if (!chance(p)) return done('Prova de Residência', 'Não foi dessa vez. As vagas de residência são disputadíssimas.' + fx({ happy: -8, stress: 8 }));
+  modal('🩺 Aprovad' + oa() + ' na residência!', 'Escolha a especialidade (3 anos de residência com bolsa de R$ 4.106/mês):', SPECIALTIES.map(s => ({ l: `${s.name}`, fn: () => {
+    startJob({ id: 'residente', field: 'Medicina', ladder: [`Médic${oa()} Residente em ${s.name}`], base: 4106, type: 'bolsa', stress: 14, cos: ['Hospital das Clínicas', 'Hospital Universitário', 'Santa Casa de Misericórdia'] }, { residency: { spec: s.name, left: 3 } });
+    done('Residência', `Você começou a residência em ${s.name}. Prepare-se para plantões infinitos.` + fx({ happy: 10, stress: 10 }));
+  } })));
+}
+
+/* ----- empregos ----- */
+function applyJob(id) {
+  if (blockedByPrison()) return;
+  const d = JOBS.find(j => j.id === id);
+  if (!d || !jobAvailable(d)) return toast('Você não atende os requisitos.');
+  if (S.job && S.job.id === id) return toast('Você já trabalha nisso.');
+  if (!useEnergy()) return;
+  let p = (d.req ? 0.5 : 0.62) + (S.st.smarts - 50) / 160 + (S.st.looks - 50) / 320 + (Array.isArray(d.req) ? (bestPrest(d.req) - 0.85) * 0.9 : 0) + (S.flags.ic ? 0.04 : 0) + (S.flags.obmep ? 0.04 : 0);
+  if (d.minSmarts && S.st.smarts < d.minSmarts) p *= 0.3;
+  if (d.looksReq && S.st.looks < d.looksReq) p *= 0.4;
+  if (S.flags.dirty || S.flags.exConvict) p *= 0.6;
+  p = clamp(p, 0.05, 0.93);
+  if (!chance(p)) return done('Candidatura', pick(['"Seu perfil é incrível, mas seguimos com outro candidato."', 'Você foi ghostad' + oa() + ' pelo RH.', 'O entrevistador perguntou seu maior defeito e você disse "sou perfeccionista". Reprovad' + oa() + '.', 'A vaga era para "júnior com 8 anos de experiência".']) + fx({ happy: -4 }));
+  let mult = 0.9 + Math.random() * 0.25;
+  if (Array.isArray(d.req)) mult *= 1 + (bestPrest(d.req) - 0.85) * 0.6;
+  if (d.id === 'medico') { const sp = SPECIALTIES.find(s => s.name === S.flags.specialty); mult *= sp ? sp.mult : 1; }
+  const salary = Math.round(d.base * mult / 10) * 10;
+  const company = pick(d.cos);
+  const title = d.id === 'medico' ? `Médic${oa()} ${S.flags.specialty === 'Medicina de Família' ? 'de Família' : 'Especialista (' + S.flags.specialty + ')'}` : d.ladder[0];
+  render(); save();
+  modal('📩 Proposta de emprego!', `<b>${esc(company)}</b> quer te contratar como <b>${title}</b>.<br><br>Salário: <b>${brl(salary)}/mês</b> · Regime: <b>${TYPE_LABEL[d.type]}</b><br><span class="text-sm text-slate-400">${d.type === 'CLT' ? 'Com FGTS (8%/mês), 13º salário, férias + 1/3 e INSS.' : d.type === 'PJ' ? 'Nota fiscal, ~6% de imposto (Simples), sem FGTS nem 13º.' : d.type === 'bolsa' ? 'Bolsa sem descontos e sem FGTS.' : 'Sem carteira assinada: renda variável, nenhum direito trabalhista.'}</span>${S.job ? `<br><br><span class="text-amber-300 text-sm">Aceitar significa pedir demissão de ${esc(S.job.company)}.</span>` : ''}`, [
+    { l: 'Aceitar', v: 'pri', fn: () => { const ladder = d.id === 'medico' ? [title, ...d.ladder.slice(1)] : d.ladder; startJob({ ...d, ladder }, { salary, company, title }); done('Contratad' + oa() + '!', `Bem-vind${oa()} à ${esc(company)}!` + fx({ happy: 10 })); } },
+    { l: 'Recusar', v: 'def' }
+  ]);
+}
+function jobAvailable(d) { return S.age >= (d.minAge || 18) && (!d.maxAge || S.age <= d.maxAge) && reqOk(d.req, d.flag); }
+function concursoAvail(c) { return S.age >= 18 && reqOk(c.req, c.flag); }
+function takeConcurso(id) {
+  if (blockedByPrison()) return;
+  const c = CONCURSOS.find(x => x.id === id);
+  if (!concursoAvail(c)) return toast('Você não atende os requisitos do edital.');
+  if (S.job && S.job.id === id) return toast('Você já é servidor(a) desse cargo.');
+  if (!useEnergy()) return;
+  S.money -= 150;
+  const score = Math.round(clamp(S.st.smarts * 0.62 + S.concursoPrep * 5.5 + gauss() * 9 - S.st.stress * 0.08 + 8, 0, 100));
+  if (score < c.cut) return done('Resultado do concurso', `Você fez ${score} pontos. Nota de corte: ${c.cut}. Reprovad${oa()}. Taxa de inscrição: R$ 150.` + fx({ happy: -6, stress: 5 }));
+  modal('🏛️ Aprovad' + oa() + ' no concurso!', `Você fez ${score} pontos (corte ${c.cut}) e foi nomead${oa()} para <b>${c.name}</b> — ${c.org}.<br>Remuneração: <b>${brl(c.base)}</b>. Regime estatutário: estabilidade, sem FGTS, com 13º e férias.`, [
+    { l: 'Tomar posse', v: 'pri', fn: () => { S.concursoPrep = Math.max(0, S.concursoPrep - 3); startJob({ id: c.id, field: 'Serviço Público', ladder: c.ladder, base: c.base, type: 'estatutario', stress: c.stress, cos: [c.org], step: 1.15 }, { salary: c.base, company: c.org }); liAch('Aprovad' + oa() + ' em concurso público com ' + score + ' pontos.'); done('Posse!', 'Estabilidade conquistada. Sua mãe já contou pra família toda.' + fx({ happy: 18, stress: -10 })); } },
+    { l: 'Recusar', v: 'def' }
+  ]);
+}
+function workAction(kind) {
+  if (!S.job) return;
+  if (!useEnergy()) return;
+  const j = S.job; let r = '';
+  if (kind === 'duro') { j.perf = clamp(j.perf + rnd(8, 14)); S.workBoost++; r = 'Você fez hora extra todos os dias.' + fx({ stress: 8, health: -1 }); }
+  else if (kind === 'puxar') { if (chance(0.6)) { j.perf = clamp(j.perf + 7); r = 'Você levou café pro chefe e riu das piadas dele. Funcionou.' + fx({ happy: -2 }); } else { j.perf = clamp(j.perf - 3); r = 'Ficou óbvio demais. Os colegas te chamam de puxa-saco.' + fx({ happy: -4 }); } }
+  else if (kind === 'aumento') {
+    if (j.type === 'informal' || j.type === 'bolsa') r = 'Não tem pra quem pedir aumento aqui.';
+    else if (j.raiseYear === S.year) r = 'Você já pediu aumento este ano. O RH riu da sua cara.' + fx({ happy: -2 });
+    else if ((j.raiseYear = S.year) && j.perf > 65 && chance(0.55)) { const o = j.salary; j.salary = Math.round(j.salary * (1.08 + Math.random() * 0.1)); liAch(`Conquistou aumento salarial (${brl(o)} → ${brl(j.salary)}).`); r = `Aumento aprovado! Novo salário: ${brl(j.salary)}.` + fx({ happy: 10 }); }
+    else { j.perf = clamp(j.perf - 5); r = '"Agora não é o momento, o mercado está difícil."' + fx({ happy: -5 }); }
+  }
+  else if (kind === 'mole') { j.perf = clamp(j.perf - rnd(8, 14)); r = 'Você ficou rolando o feed no banheiro por 40 minutos por dia.' + fx({ stress: -8, happy: 4 }); }
+  else if (kind === 'promo') { if (j.perf > 70 && chance(0.5) && promote()) r = 'Você pediu e levou!'; else { j.perf = clamp(j.perf - 4); r = 'Seu gestor disse que "ainda não é a hora".' + fx({ happy: -4 }); } }
+  done('Trabalho', r);
+}
+function quitJob() {
+  if (!S.job) return;
+  const extra = S.job.type === 'CLT' ? '<br><span class="text-amber-300 text-sm">Pedido de demissão: sem multa de 40% e FGTS fica retido.</span>' : '';
+  modal('Pedir demissão?', `Sair de ${esc(S.job.company)}?${extra}`, [
+    { l: 'Pedir demissão', v: 'dan', fn: () => { const r = endJob('Pediu demissão', 'Pediu demissão para buscar novos rumos.', 'quit'); done('Demissão', 'Você entregou o crachá e saiu sem olhar pra trás. ' + r + fx({ stress: -12, happy: 5 })); } },
+    { l: 'Ficar', v: 'pri' }
+  ]);
+}
+function quitGig(i) { const g = S.sideGigs[i]; if (!g) return; S.sideGigs.splice(i, 1); const e = S.linkedin.find(x => x.title === 'Professor(a) Universitário(a)' && !x.end); if (e) { e.end = S.year; e.status = 'Anterior'; e.ach.push('Encerrou a atividade docente.'); } done('Renda extra', `Você deixou: ${g.name}.`); }
+function openBusiness(id) {
+  if (blockedByPrison()) return;
+  const b = BUSINESSES.find(x => x.id === id);
+  if (S.business) return toast('Você já tem um negócio.');
+  if (S.age < 18) return toast('Precisa ter 18 anos para abrir CNPJ.');
+  if (!reqOk(b.req)) return toast('Você não atende os requisitos.');
+  if (S.money < b.cost) return toast(`Precisa de ${brl(b.cost)} para abrir.`);
+  if (!useEnergy()) return;
+  S.money -= b.cost;
+  const lid = 'biz' + Date.now();
+  S.business = { id, name: b.name, rep: 35 + rnd(0, 15), value: b.cost * 0.7, profitM: Math.round(b.base * 0.1), years: 0, lid, start: S.year };
+  S.linkedin.push({ id: lid, company: b.name + ' (empresa própria)', title: 'Fundador(a) & CEO', start: S.year, end: null, status: 'Atual', type: 'Sócio', field: 'Empreendedorismo', salary: 0, ach: [`Fundou o negócio com investimento de ${brl(b.cost)}.`] });
+  addLog(`🏪 Você abriu: <b>${b.name}</b> (investimento de ${brl(b.cost)}).`, 'text-emerald-300');
+  done('Negócio aberto!', `CNPJ ativo! ${b.name} começou a operar.` + fx({ happy: 10, stress: 10 }));
+}
+function bizAction(kind) {
+  const b = S.business; if (!b) return;
+  if (kind === 'mkt') { if (S.money < 5000) return toast('Precisa de R$ 5.000.'); if (!useEnergy()) return; S.money -= 5000; b.rep = clamp(b.rep + rnd(4, 12)); return done('Marketing', `Campanha no Instagram e panfletagem. Reputação: ${Math.round(b.rep)}.`); }
+  if (kind === 'sell') {
+    const v = Math.round(b.value * (0.6 + b.rep / 200));
+    modal('Vender negócio?', `Um comprador oferece <b>${brl(v)}</b> por ${b.name}.`, [
+      { l: 'Vender', v: 'pri', fn: () => { S.money += v; const e = liEntry(b.lid); if (e) { e.end = S.year; e.status = 'Anterior'; e.ach.push(`Vendeu a empresa por ${brl(v)} (exit!).`); } addLog(`🤝 Você vendeu ${b.name} por ${brl(v)}.`, 'text-emerald-300'); S.business = null; done('Exit!', `Venda concluída: ${brl(v)}.` + fx({ happy: 15, stress: -15 })); } },
+      { l: 'Manter', v: 'def' }
+    ]);
+  }
+}
+function retire() {
+  const minAge = S.gender === 'F' ? 62 : 65;
+  if (S.age < minAge) return toast(`Idade mínima para aposentadoria: ${minAge} anos.`);
+  if (S.retired) return;
+  if (S.contribYears < 15) return toast(`Você tem ${S.contribYears} anos de contribuição. Mínimo: 15.`);
+  const avg = S.salaryYears ? S.salarySum / S.salaryYears : 1518;
+  const pension = Math.round(clamp(avg * (0.6 + 0.02 * Math.max(0, S.contribYears - (S.gender === 'F' ? 15 : 20))), 1518, 8157.41));
+  modal('Aposentadoria', `Benefício estimado: <b>${brl(pension)}/mês</b> (${S.contribYears} anos de contribuição). FGTS liberado para saque: ${brl(S.fgts)}.`, [
+    { l: 'Aposentar', v: 'pri', fn: () => { if (S.job) endJob('Aposentad' + oa(), 'Encerrou a carreira para se aposentar.', 'retire'); S.retired = { pension, year: S.year }; S.money += S.fgts; S.fgts = 0; addLog(`🏖️ Você se aposentou! Benefício: ${brl(pension)}/mês.`, 'text-emerald-300'); done('Aposentad' + oa() + '!', 'Agora é só pijama, novela e grupo da família.' + fx({ happy: 15, stress: -25 })); } },
+    { l: 'Continuar trabalhando', v: 'def' }
+  ]);
+}
+function habeas() {
+  if (S.prison <= 0) return;
+  if (S.money < 50000) return toast('Um bom criminalista custa R$ 50.000.');
+  S.money -= 50000;
+  if (chance(0.35)) { S.prison = 0; S.flags.exConvict = 1; addLog('⚖️ Habeas corpus concedido! Você está livre.', 'text-emerald-300'); done('Liberdade!', 'O STF concedeu seu habeas corpus.' + fx({ happy: 25 })); }
+  else done('Habeas corpus', 'Pedido negado. R$ 50 mil a menos.' + fx({ happy: -10 }));
+}
+
+/* ----- relacionamentos ----- */
+function meet(place) {
+  if (blockedByPrison()) return;
+  if (S.age < 16) return toast('Muito cedo pra isso!');
+  if (place === 'faculdade' && !S.uni) return toast('Você não está na faculdade.');
+  if (place === 'trabalho' && !S.job) return toast('Você não está trabalhando.');
+  if (!useEnergy()) return;
+  if (place === 'app' && chance(0.25)) return done('App de namoro', 'Seu match marcou num lugar e nunca apareceu. Ghosting clássico.' + fx({ happy: -5 }));
+  const ppl = meetPeople(place, place === 'app' ? 3 : 2);
+  done('Novas pessoas', `Você conheceu ${ppl.length} pessoa(s) ${({ rua: 'na rua', balada: 'na balada', faculdade: 'na faculdade', trabalho: 'no trabalho', app: 'no app de namoro', igreja: 'na igreja' })[place]}.`);
+}
+function dateProspect(pid) {
+  const p = S.prospects.find(x => x.id === pid); if (!p) return;
+  if (!useEnergy()) return;
+  S.prospects = S.prospects.filter(x => x.id !== pid);
+  const succ = chance(clamp((p.attraction + p.compat) / 200 + (S.st.looks - 50) / 180 + (S.money > 50000 ? 0.05 : 0), 0.1, 0.92));
+  if (S.partner) {
+    if (!succ) return done('Traição frustrada', `${esc(p.name.split(' ')[0])} sabia que você era comprometid${oa()} e te deu um fora.` + fx({ happy: -4 }));
+    if (chance(0.45)) { addLog(`🔥 ${esc(S.partner.name)} descobriu sua traição com ${esc(p.name)}.`, 'text-rose-300'); const was = S.partner.status; S.partner.rel -= 40; if (was === 'casado') { breakup(true); return; } done('Pego no flagra!', `${esc(S.partner.name.split(' ')[0])} viu as mensagens. Barraco no meio da rua!` + fx({ happy: -15, stress: 15 })); dumpPartner(); return render(); }
+    return done('Caso secreto', `Você teve um caso com ${esc(p.name.split(' ')[0])}. Ninguém descobriu... ainda.` + fx({ happy: 6, stress: 8 }));
+  }
+  if (!succ) return done('Encontro', `${esc(p.name.split(' ')[0])} ${pick(['disse que te vê "só como amigo(a)"', 'foi embora no meio do jantar', 'te bloqueou depois do encontro', 'achou você "intens' + oa() + ' demais"'])}.` + fx({ happy: -6 }));
+  S.partner = { name: p.name, gender: p.gender, age: p.age, looks: p.looks, smarts: p.smarts, job: p.job, income: p.income, rel: clamp(50 + Math.round(p.compat / 3)), status: 'namoro', years: 0 };
+  addLog(`❤️ Você começou a namorar ${esc(p.name)} (${p.job}).`, 'text-pink-300');
+  done('Deu match! ❤️', `Você e ${esc(p.name.split(' ')[0])} estão namorando!` + fx({ happy: 15 }));
+}
+function partnerAction(kind) {
+  const p = S.partner; if (!p) return;
+  if (blockedByPrison()) return;
+  if (kind === 'breakup') return breakup(false);
+  if (kind === 'propose') { if (p.status !== 'namoro') return; if (!useEnergy()) return; return proposeMarriage(); }
+  if (!useEnergy()) return;
+  let r = '';
+  if (kind === 'date') { if (S.money < 300) return toast('Precisa de R$ 300.'); S.money -= 300; p.rel = clamp(p.rel + rnd(5, 12)); r = `Jantar romântico ${pick(['no rodízio de pizza', 'à luz de velas', 'no barzinho de sempre', 'no japonês'])}.` + fx({ happy: 6 }); }
+  if (kind === 'gift') { if (S.money < 800) return toast('Precisa de R$ 800.'); S.money -= 800; p.rel = clamp(p.rel + rnd(6, 14)); r = `Você deu ${pick(['um perfume', 'um relógio', 'um buquê gigante', 'um vale-spa'])}.` + fx({ happy: 3 }); }
+  if (kind === 'talk') { p.rel = clamp(p.rel + rnd(-2, 7)); r = 'Vocês conversaram até tarde sobre a vida.' + fx({ stress: -4 }); }
+  if (kind === 'fight') { p.rel = clamp(p.rel - rnd(10, 20)); r = `Vocês brigaram feio por causa de ${pick(['louça', 'dinheiro', 'ciúmes', 'quem esqueceu de pagar a conta de luz', 'política'])}.` + fx({ stress: 10, happy: -6 }); }
+  if (kind === 'baby') {
+    if (p.age > 50) r = 'Biologicamente complicado a essa altura...';
+    else if (S.flags.babyDue) r = 'Já tem um bebê a caminho!';
+    else if (chance(p.rel > 50 ? 0.65 : 0.3)) { S.flags.babyDue = 1; r = `${esc(p.name.split(' ')[0])} está grávid${oa(p.gender === 'M' && S.gender === 'F' ? 'F' : p.gender)}! Um bebê vai nascer no próximo ano. 👶`.replace(/grávido|grávide/, 'grávida') + fx({ happy: 12, stress: 6 }); addLog('🤰 Bebê a caminho!'); }
+    else r = 'Vocês tentaram, mas não foi dessa vez.' + fx({ happy: -2 });
+  }
+  if (kind === 'adopt') { if (S.money < 5000) return toast('Custos do processo: R$ 5.000.'); S.money -= 5000; newChild(true); r = 'Após 2 anos de processo, a adoção foi aprovada! Bem-vinda, criança.' + fx({ happy: 15 }); }
+  done(p.name.split(' ')[0], r);
+}
+function familyAction(idx, kind, group) {
+  const p = (group === 'sib' ? S.family.siblings : S.family.parents)[idx]; if (!p || !p.alive) return;
+  if (!useEnergy()) return;
+  let r = '';
+  if (kind === 'time') { p.rel = clamp(p.rel + rnd(4, 10)); r = `Você passou um tempo com ${esc(p.name.split(' ')[0])}. ${pick(['Viram novela juntos.', 'Tomaram café da tarde.', 'Riram de fotos antigas.'])}` + fx({ happy: 4, stress: -3 }); }
+  if (kind === 'money') {
+    const amt = { pobre: rnd(10, 100), media: rnd(100, 1500), rica: rnd(1000, 20000) }[S.familyClass];
+    if (chance(p.rel / 120)) { r = `${esc(p.name.split(' ')[0])} te deu ${brl(amt)}.` + fx({ money: amt }); p.rel = clamp(p.rel - 3); }
+    else { r = `"Dinheiro não dá em árvore!" — ${esc(p.name.split(' ')[0])}.`; p.rel = clamp(p.rel - 6); }
+  }
+  if (kind === 'fight') { p.rel = clamp(p.rel - rnd(10, 20)); r = 'Vocês brigaram e alguém bateu a porta.' + fx({ stress: 6, happy: -4 }); }
+  done(p.role, r);
+}
+function childAction(idx, kind) {
+  const c = S.children[idx]; if (!c) return;
+  if (kind === 'school') { c.school = c.school === 'pública' ? 'particular' : 'pública'; return done('Escola', `${esc(c.name.split(' ')[0])} agora estuda em escola ${c.school}.`); }
+  if (!useEnergy()) return;
+  let r = '';
+  if (kind === 'time') { c.rel = clamp(c.rel + rnd(5, 12)); if (c.age < 18 && c.age > 5) c.smarts = clamp(c.smarts + 2); r = `Você passou o dia com ${esc(c.name.split(' ')[0])}. ${pick(['Brincaram no parque.', 'Fizeram o dever de casa juntos.', 'Assistiram desenho.', 'Jogaram videogame.'])}` + fx({ happy: 6, stress: -3 }); }
+  if (kind === 'money') { if (S.money < 1000) return toast('Precisa de R$ 1.000.'); S.money -= 1000; c.rel = clamp(c.rel + 6); r = 'Você deu R$ 1.000. Seu/sua filho(a) te ama (pelo menos hoje).'; }
+  done(c.name.split(' ')[0], r);
+}
+
+/* ----- moradia, veículos, investimentos ----- */
+function monthlyGross() { return (S.job ? S.job.salary : 0) + (married() ? S.partner.income : 0) + (S.business ? Math.max(0, S.business.profitM) : 0) + sum(S.sideGigs.map(g => g.monthly)) + (S.retired ? S.retired.pension : 0); }
+function rent(id) {
+  if (blockedByPrison()) return;
+  if (S.age < 18) return toast('Menor de idade não assina contrato de aluguel.');
+  const r = RENTALS.find(x => x.id === id);
+  if (S.home) return toast('Você já mora em imóvel próprio. Venda-o primeiro.');
+  if (monthlyGross() < r.rent * 2.5) return toast(`A imobiliária exige renda de ${brl(r.rent * 2.5)} (3x o aluguel, com tolerância).`);
+  if (S.money < r.rent * 3) return toast(`Caução de 3 aluguéis: ${brl(r.rent * 3)}.`);
+  S.money -= r.rent * 3;
+  const caucao = r.rent * 3;
+  if (S.housing.kind === 'aluguel') S.money += S.housing.caucao || 0;
+  S.housing = { kind: 'aluguel', id, name: r.name, rent: r.rent, caucao };
+  addLog(`🔑 Você se mudou para: ${r.name} (${brl(r.rent)}/mês).`);
+  done('Mudança!', `Contrato assinado. Caução de ${brl(caucao)} paga.` + fx({ happy: 10 }));
+}
+function backToParents() {
+  if (!parentsAlive()) return toast('Seus pais não estão mais vivos.');
+  if (S.housing.kind === 'aluguel') S.money += S.housing.caucao || 0;
+  S.housing = { kind: 'pais' };
+  addLog('🏠 Você voltou a morar com seus pais.');
+  done('De volta pra casa', 'Seu quarto continua do mesmo jeito. Até o pôster.' + fx({ happy: -5, stress: -5 }));
+}
+function buyHome(id, financed) {
+  if (blockedByPrison()) return;
+  if (S.age < 18) return toast('Precisa ser maior de idade.');
+  if (S.home) return toast('Você já tem imóvel.');
+  const h = HOMES.find(x => x.id === id);
+  if (!financed) {
+    if (S.money + S.fgts < h.price) return toast(`Precisa de ${brl(h.price)} (dinheiro + FGTS).`);
+    const useF = Math.min(S.fgts, h.price); S.fgts -= useF; S.money -= h.price - useF;
+    S.home = { id, name: h.name, value: h.price, fin: null };
+  } else {
+    const entrada = h.price * 0.2;
+    if (S.money + S.fgts < entrada) return toast(`Entrada de 20%: ${brl(entrada)} (pode usar FGTS).`);
+    const fin = h.price - entrada, rate = (S.market.selic + 1.5) / 100 / 12, n = 360;
+    const pmt = Math.round(fin * rate / (1 - Math.pow(1 + rate, -n)));
+    if (pmt > monthlyGross() * 0.3) return toast(`Banco negou: parcela de ${brl(pmt)} passa de 30% da sua renda (${brl(monthlyGross())}).`);
+    const useF = Math.min(S.fgts, entrada); S.fgts -= useF; S.money -= entrada - useF;
+    S.home = { id, name: h.name, value: h.price, fin: { balance: fin, payment: pmt, rate, months: n } };
+  }
+  if (S.housing.kind === 'aluguel') S.money += S.housing.caucao || 0;
+  S.housing = { kind: 'propria' };
+  addLog(`🏡 Você comprou: <b>${h.name}</b> por ${brl(h.price)}${financed ? ' (financiado em 30 anos)' : ' à vista'}.`, 'text-emerald-300');
+  done('Casa própria!', `As chaves são suas: ${h.name}.` + (financed ? `<br>Parcela: ${brl(S.home.fin.payment)}/mês por 360 meses (juros de ${((S.market.selic + 1.5)).toFixed(2)}% a.a.).` : '') + fx({ happy: 20 }));
+}
+function sellHome() {
+  if (!S.home) return;
+  const eq = S.home.value - (S.home.fin ? S.home.fin.balance : 0);
+  modal('Vender imóvel?', `Valor de mercado: ${brl(S.home.value)}. Após quitar o banco, você recebe ${brl(eq)}.`, [
+    { l: 'Vender', v: 'dan', fn: () => { S.money += eq; addLog(`🏷️ Você vendeu ${S.home.name} e recebeu ${brl(eq)}.`); S.home = null; S.housing = parentsAlive() ? { kind: 'pais' } : { kind: 'aluguel', id: 'quitinete', name: 'Quitinete no centro', rent: 950, caucao: 0 }; done('Imóvel vendido', `Você recebeu ${brl(eq)}. ${S.housing.kind === 'pais' ? 'Voltou pra casa dos pais.' : 'Alugou uma quitinete.'}`); } },
+    { l: 'Cancelar', v: 'def' }
+  ]);
+}
+function buyVehicle(id) {
+  if (blockedByPrison()) return;
+  if (S.age < 18) return toast('Precisa de CNH (18 anos).');
+  const v = VEHICLES.find(x => x.id === id);
+  if (S.money < v.price) return toast(`Precisa de ${brl(v.price)} à vista.`);
+  S.money -= v.price;
+  S.vehicles.push({ id: v.id, name: v.name, value: v.price, maint: v.maint, moto: !!v.moto });
+  addLog(`🚗 Você comprou: ${v.name} (${brl(v.price)}).`);
+  done('Veículo novo!', `Cheirinho de ${v.name} novo.` + fx({ happy: v.price > 150000 ? 15 : 8, looks: v.price > 500000 ? 5 : 0 }));
+}
+function sellVehicle(i) {
+  const v = S.vehicles[i]; if (!v) return;
+  const val = Math.round(v.value * 0.92);
+  S.money += val; S.vehicles.splice(i, 1);
+  if (S.job && ((S.job.id === 'uber' && !hasCar()) || (S.job.id === 'entregador' && !hasVehicle()))) endJob('Saiu', 'Encerrou após vender o veículo.', 'quit');
+  addLog(`🏷️ Vendeu ${v.name} por ${brl(val)}.`);
+  done('Veículo vendido', `Você recebeu ${brl(val)}.`);
+}
+const INV_META = {
+  cdb: { name: 'Renda Fixa (CDB 100% CDI)', risk: 'Baixo', desc: 'Rende ~Selic, com IR' },
+  tesouro: { name: 'Tesouro Direto (Selic/IPCA+)', risk: 'Baixo', desc: 'Título público, um pouco acima da Selic' },
+  acoes: { name: 'Ações na Bolsa (B3)', risk: 'Alto', desc: 'Pode subir 50% ou derreter 40%' },
+  fii: { name: 'Fundos Imobiliários (FIIs)', risk: 'Médio', desc: 'Dividendos mensais isentos + variação da cota' }
+};
+function invest(kind, dir) {
+  if (blockedByPrison()) return;
+  if (S.age < 16) return toast('Precisa ter 16 anos (com autorização) para investir.');
+  const inp = $('inv-amt'); let amt = Math.round(parseFloat((inp && inp.value || '0').replace(/\./g, '').replace(',', '.')) || 0);
+  if (amt <= 0) return toast('Digite um valor válido.');
+  if (dir > 0) { if (amt > S.money) return toast('Saldo insuficiente.'); S.money -= amt; S.inv[kind] += amt; addLog(`📈 Aplicou ${brl(amt)} em ${INV_META[kind].name}.`); }
+  else { amt = Math.min(amt, S.inv[kind]); if (amt <= 0) return toast('Nada aplicado aqui.'); S.inv[kind] -= amt; S.money += amt; addLog(`📉 Resgatou ${brl(amt)} de ${INV_META[kind].name}.`); }
+  render(); save(); toast(dir > 0 ? `✅ Aplicado ${brl(amt)}` : `✅ Resgatado ${brl(amt)}`);
+}
+
+/* =========================================================
+   PERSISTÊNCIA
+   ========================================================= */
+function save() { try { if (S) localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* storage indisponível */ } }
+function loadSave() { try { const raw = localStorage.getItem(SAVE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) { } }
+
+/* =========================================================
+   UI: helpers
+   ========================================================= */
+const BTN = { def: 'bg-slate-800 hover:bg-slate-700 border-slate-700', pri: 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white', dan: 'bg-rose-700 hover:bg-rose-600 border-rose-600 text-white', warn: 'bg-amber-600 hover:bg-amber-500 border-amber-500 text-white', vio: 'bg-violet-600 hover:bg-violet-500 border-violet-500 text-white', sky: 'bg-sky-700 hover:bg-sky-600 border-sky-600 text-white' };
+function btn(label, on, v = 'def', dis = false, extra = '') { return `<button ${dis ? 'disabled' : ''} onclick="${on}" class="px-3 py-2 rounded-xl border text-sm font-medium transition active:scale-[.98] ${BTN[v]} disabled:opacity-40 disabled:cursor-not-allowed ${extra}">${label}</button>`; }
+const card = (title, body, extra = '') => `<section class="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 ${extra}">${title ? `<h3 class="font-semibold text-slate-200 mb-3">${title}</h3>` : ''}${body}</section>`;
+const chip = (t, cls = 'bg-slate-800 text-slate-300') => `<span class="inline-block px-2 py-0.5 rounded-lg text-xs ${cls}">${t}</span>`;
+function bar(k) { const [n, i, c] = STAT_META[k], v = Math.round(S.st[k]); return `<div><div class="flex justify-between text-sm mb-1"><span>${i} ${n}</span><span class="font-mono">${v}%</span></div><div class="h-2.5 bg-slate-800 rounded-full overflow-hidden"><div class="h-full ${c} transition-all" style="width:${v}%"></div></div></div>`; }
+function row(l, r, cls = '') { return `<div class="flex justify-between gap-3 py-1.5 border-b border-slate-800/70 text-sm ${cls}"><span class="text-slate-400">${l}</span><span class="text-right">${r}</span></div>`; }
+
+function modal(title, body, choices) {
+  MFN = (choices || [{ l: 'OK' }]).map(c => c.fn || null);
+  const list = choices || [{ l: 'OK', v: 'pri' }];
+  $('modal').innerHTML = `<div class="pop bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg max-h-[88vh] overflow-y-auto shadow-2xl">
+    <div class="px-5 pt-5 pb-2 text-sm text-emerald-400 font-semibold">${title}</div>
+    <div class="px-5 pb-4 text-slate-100">${body}</div>
+    <div class="px-5 pb-5 grid gap-2">${list.map((c, i) => btn(c.l, `G._mc(${i})`, c.v || 'def', false, 'w-full text-left')).join('')}</div></div>`;
+  $('modal').classList.remove('hidden');
+}
+function closeModal() { $('modal').classList.add('hidden'); $('modal').innerHTML = ''; }
+let toastT = null;
+function toast(msg) { const t = $('toast'); t.innerHTML = msg; t.classList.remove('hidden'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.add('hidden'), 2600); }
+
+/* =========================================================
+   UI: tela de criação
+   ========================================================= */
+function rollAttrs() { return { health: rnd(55, 100), happy: rnd(50, 100), smarts: rnd(15, 95), looks: rnd(15, 95), stress: rnd(0, 30) }; }
+function renderCreate() {
+  const saved = loadSave();
+  if (!CREATE) { const g = rgender(); CREATE = { name: rname(g), gender: g, country: 'Brasil', familyClass: pick(['pobre', 'media', 'media', 'rica']), ...rollAttrs(), moneyBonus: 0 }; }
+  const c = CREATE;
+  const slider = (k) => { const [n, i] = STAT_META[k]; return `<label class="block"><div class="flex justify-between text-sm mb-1"><span>${i} ${n}</span><span id="v-${k}" class="font-mono">${c[k]}</span></div><input type="range" min="0" max="100" value="${c[k]}" class="w-full" oninput="G.cset('${k}', +this.value)"></label>`; };
+  $('app').innerHTML = `<div class="min-h-screen flex items-center justify-center p-4 fade-in"><div class="w-full max-w-xl">
+    <div class="text-center mb-6">
+      <div class="text-5xl mb-2">🇧🇷</div>
+      <h1 class="text-3xl sm:text-4xl font-black tracking-tight bg-gradient-to-r from-emerald-400 via-yellow-300 to-sky-400 bg-clip-text text-transparent">LifeCorp</h1>
+      <p class="text-slate-400">Brazil Edition — nasça, sobreviva ao caos e viva do seu jeito.</p>
+    </div>
+    ${saved && saved.alive ? card('', `<div class="flex items-center justify-between gap-3"><div><div class="text-sm text-slate-400">Vida salva</div><div class="font-semibold">${esc(saved.name)}, ${saved.age} anos</div></div>${btn('▶ Continuar', 'G.continueGame()', 'pri')}</div>`, 'mb-4') : ''}
+    ${card('Nova vida', `<div class="space-y-4">
+      <label class="block"><span class="text-sm text-slate-400">Nome completo</span>
+        <div class="flex gap-2 mt-1"><input id="c-name" maxlength="40" value="${esc(c.name)}" oninput="G.cset('name', this.value)" class="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 outline-none focus:border-emerald-500">${btn('🎲', 'G.cRandName()')}</div></label>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <label class="block"><span class="text-sm text-slate-400">Gênero</span><select onchange="G.cset('gender', this.value)" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
+          ${[['M', 'Masculino'], ['F', 'Feminino'], ['N', 'Não-binário']].map(([v, l]) => `<option value="${v}" ${c.gender === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="block"><span class="text-sm text-slate-400">País de nascimento</span><select onchange="G.cset('country', this.value)" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
+          ${Object.keys(COUNTRIES).map(k => `<option ${c.country === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
+        <label class="block"><span class="text-sm text-slate-400">Família</span><select onchange="G.cset('familyClass', this.value)" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2">
+          ${[['pobre', 'Humilde'], ['media', 'Classe média'], ['rica', 'Rica']].map(([v, l]) => `<option value="${v}" ${c.familyClass === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <div class="flex items-center justify-between"><span class="text-sm text-slate-400">Atributos iniciais</span>${btn('🎲 Sortear atributos', 'G.cRoll()', 'def')}</div>
+      <div class="space-y-3">${['health', 'happy', 'smarts', 'looks', 'stress'].map(slider).join('')}</div>
+      <div class="text-sm text-slate-400">💵 Dinheiro inicial (poupança da família no seu nome): <b class="text-slate-200">${brl({ pobre: 0, media: 2000, rica: 60000 }[c.familyClass])}</b></div>
+      <p class="text-xs text-slate-500">${c.country !== 'Brasil' ? 'Você vai nascer fora e sua família se muda para o Brasil quando você tiver 3 anos.' : 'Fora da casinha é o padrão aqui.'}</p>
+      ${btn('👶 Nascer!', 'G.start()', 'pri', false, 'w-full py-3 text-base')}
+    </div>`)}
+    <p class="text-center text-xs text-slate-600 mt-4">Progresso salvo automaticamente neste navegador.</p>
+  </div></div>`;
+}
+
+/* =========================================================
+   UI: jogo
+   ========================================================= */
+const TABS = [['perfil', '👤', 'Perfil'], ['linkedin', '💼', 'LinkedIn'], ['carreira', '🎓', 'Carreira'], ['financas', '💰', 'Finanças'], ['relacoes', '❤️', 'Relações'], ['atividades', '⚡', 'Atividades']];
+function render() {
+  if (!S) return renderCreate();
+  const nw = netWorth();
+  const head = `<header class="sticky top-0 z-30 bg-slate-950/90 backdrop-blur border-b border-slate-800">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="w-11 h-11 shrink-0 rounded-2xl bg-gradient-to-br from-emerald-500 to-sky-600 grid place-items-center text-xl font-bold">${esc(S.name[0] || '?').toUpperCase()}</div>
+      <div class="min-w-0 flex-1"><div class="font-semibold truncate">${esc(S.name)}</div><div class="text-xs text-slate-400 truncate">${S.age} anos · ${lifeStage()} · ${S.year} · ${esc(S.city)}</div></div>
+      <div class="text-right"><div class="font-mono font-semibold ${S.money < 0 ? 'text-rose-400' : 'text-emerald-400'}">${brl(S.money)}</div><div class="text-[11px] text-slate-500">patrimônio ${brl(nw)}</div></div>
+    </div>
+    <nav class="tabs max-w-5xl mx-auto px-2 flex gap-1 overflow-x-auto">${TABS.map(([id, ic, l]) => `<button onclick="G.tab('${id}')" class="shrink-0 px-3 py-2 text-sm border-b-2 ${TAB === id ? 'border-emerald-400 text-emerald-300' : 'border-transparent text-slate-400 hover:text-slate-200'}">${ic} ${l}</button>`).join('')}</nav>
+  </header>`;
+  const body = { perfil: renderPerfil, linkedin: renderLinkedin, carreira: renderCarreira, financas: renderFinancas, relacoes: renderRelacoes, atividades: renderAtividades }[TAB]();
+  const foot = `<footer class="fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur border-t border-slate-800">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="text-xs text-slate-400 leading-tight"><div>⚡ Energia</div><div class="font-mono text-amber-300 text-sm">${'●'.repeat(S.energy)}<span class="text-slate-700">${'●'.repeat(Math.max(0, ENERGY_PER_YEAR - S.energy))}</span></div></div>
+      ${S.alive ? btn(`🎂 Envelhecer +1 Ano <span class="opacity-70">(${S.age + 1})</span>`, 'G.ageUp()', 'pri', false, 'flex-1 py-3 text-base font-bold') : btn('⚰️ Fim da linha — Nova vida', 'G.newLife()', 'dan', false, 'flex-1 py-3 text-base font-bold')}
+    </div></footer>`;
+  const y = window.scrollY;
+  $('app').innerHTML = head + `<main class="max-w-5xl mx-auto px-4 pt-4 pb-28 fade-in">${body}</main>` + foot;
+  window.scrollTo(0, y);
+}
+
+function renderPerfil() {
+  const statusChips = [
+    S.prison > 0 ? chip(`🔒 Pres${oa()} (${S.prison} ano(s))`, 'bg-rose-900/60 text-rose-200') : '',
+    S.job ? chip(`💼 ${S.job.title}`, 'bg-emerald-900/50 text-emerald-200') : S.retired ? chip('🏖️ Aposentad' + oa(), 'bg-sky-900/50 text-sky-200') : S.age >= 18 && !S.uni && !S.business ? chip('🔎 Desempregad' + oa(), 'bg-slate-800 text-slate-300') : '',
+    S.uni ? chip(`🎓 ${COURSES[S.uni.course].name} — ${S.uni.uniName} (${S.uni.done + 1}º ano)`, 'bg-sky-900/50 text-sky-200') : inSchool() ? chip(`🎒 ${schoolLabel(S.age)}`, 'bg-sky-900/50 text-sky-200') : '',
+    S.business ? chip(`🏪 ${S.business.name}`, 'bg-amber-900/50 text-amber-200') : '',
+    S.partner ? chip(`❤️ ${S.partner.status === 'casado' ? 'Casad' + oa() : 'Namorando'} com ${esc(S.partner.name.split(' ')[0])}`, 'bg-pink-900/50 text-pink-200') : '',
+    S.children.length ? chip(`👶 ${S.children.length} filho(s)`) : '',
+    chip(S.housing.kind === 'pais' ? '🏠 Mora com os pais' : S.housing.kind === 'propria' ? `🏡 ${S.home.name}` : `🔑 ${S.housing.name}`),
+    S.flags.pet ? chip(`🐕 ${S.flags.pet}`) : ''
+  ].join(' ');
+  const ill = S.illnesses.length ? `<div class="mt-3 text-sm text-rose-300">🦠 Doenças: ${S.illnesses.map(i => i.name).join(', ')} <span class="text-slate-500">(trate em Atividades)</span></div>` : '';
+  const prison = S.prison > 0 ? card('🔒 Sistema prisional', `<p class="text-sm text-slate-300 mb-3">Você está cumprindo pena. Faltam ${S.prison} ano(s). Atividades limitadas a ler, meditar, correr e rezar.</p>${btn('⚖️ Pedir habeas corpus (R$ 50.000)', 'G.habeas()', 'warn')}`, 'border-rose-900') : '';
+  const log = S.log.slice(0, 40).map(e => `<div class="relative pl-6 pb-4"><div class="absolute left-0 top-1 w-3 h-3 rounded-full bg-emerald-500/80 ring-4 ring-slate-900"></div><div class="absolute left-[5px] top-4 bottom-0 w-px bg-slate-800"></div>
+    <div class="text-xs font-semibold text-emerald-400 mb-1">${e.age} anos · ${e.year}</div>
+    <div class="space-y-1 text-sm">${e.items.length ? e.items.map(i => `<div class="${i.c || 'text-slate-300'}">${i.t}</div>`).join('') : '<div class="text-slate-500">Um ano tranquilo. Nada de mais aconteceu.</div>'}</div></div>`).join('');
+  return `<div class="grid lg:grid-cols-[340px_1fr] gap-4">
+    <div class="space-y-4">
+      ${card('Atributos', `<div class="space-y-3">${['health', 'happy', 'smarts', 'looks', 'stress'].map(bar).join('')}</div>${ill}`)}
+      ${card('Status', `<div class="flex flex-wrap gap-1.5">${statusChips}</div>
+        <div class="mt-3">${row('Gênero', { M: 'Masculino', F: 'Feminino', N: 'Não-binário' }[S.gender])}${row('Nascimento', `${S.birthYear} · ${S.country}`)}${row('Família', { pobre: 'Humilde', media: 'Classe média', rica: 'Rica' }[S.familyClass])}${row('Inglês', ['Nenhum', 'Básico', 'Intermediário', 'Fluente'][S.flags.english])}${row('Anos de contribuição INSS', S.contribYears)}</div>`)}
+      ${prison}
+    </div>
+    ${card('📜 Linha do tempo da vida', `<div>${log}</div>`)}
+  </div>`;
+}
+
+function renderLinkedin() {
+  const headline = S.job ? `${S.job.title} @ ${esc(S.job.company)}` : S.retired ? 'Aposentad' + oa() + ' · Mentor(a) nas horas vagas' : S.business ? `Fundador(a) & CEO @ ${S.business.name}` : S.uni ? `Estudante de ${COURSES[S.uni.course].name} na ${S.uni.uniName}` : S.age < 16 ? 'Ainda é criança demais pro LinkedIn (mas a mãe já criou o perfil)' : '#OpenToWork · Em busca de novas oportunidades';
+  const conns = Math.min(500, 3 + S.linkedin.length * 37 + S.degrees.length * 60 + Math.max(0, S.age - 16) * 4);
+  const exp = [...S.linkedin].sort((a, b) => (b.end === null) - (a.end === null) || b.start - a.start).map(e => {
+    const dur = (e.end || S.year) - e.start;
+    return `<div class="flex gap-3 py-4 border-b border-slate-800 last:border-0">
+      <div class="w-12 h-12 shrink-0 rounded-xl bg-slate-800 grid place-items-center text-lg">${e.field === 'Medicina' ? '🏥' : e.field === 'Odontologia' ? '🦷' : e.field === 'Tecnologia' ? '💻' : e.field === 'Direito' ? '⚖️' : e.field === 'Serviço Público' ? '🏛️' : e.field === 'Empreendedorismo' ? '🚀' : e.field === 'Artes' ? '🎨' : e.field === 'Educação' ? '📚' : '🏢'}</div>
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2"><span class="font-semibold">${esc(e.title)}</span>${e.status === 'Atual' ? chip('Atual', 'bg-emerald-900/60 text-emerald-200') : chip(e.exit || 'Anterior')}</div>
+        <div class="text-sm text-slate-300">${esc(e.company)} · ${TYPE_LABEL[e.type] || e.type}</div>
+        <div class="text-xs text-slate-500">${e.start} – ${e.end || 'o momento'} · ${dur < 1 ? 'menos de 1 ano' : dur + ' ano' + (dur > 1 ? 's' : '')}${e.salary ? ' · último salário ' + brl(e.salary) : ''}</div>
+        <ul class="mt-2 space-y-1 text-sm text-slate-300 list-disc list-inside">${e.ach.map(a => `<li>${a}</li>`).join('')}</ul>
+      </div></div>`;
+  }).join('') || '<p class="text-sm text-slate-500">Nenhuma experiência ainda. Todo CEO começou como estagiário (ou herdeiro).</p>';
+  const edu = [
+    ...(S.uni ? [`<div class="py-3 border-b border-slate-800"><div class="font-semibold">${S.uni.uniName}</div><div class="text-sm text-slate-300">Bacharelado em ${COURSES[S.uni.course].name}</div><div class="text-xs text-slate-500">${S.uni.start} – ${S.uni.start + S.uni.years} (previsto) · cursando</div></div>`] : []),
+    ...S.degrees.slice().reverse().map(d => `<div class="py-3 border-b border-slate-800"><div class="font-semibold">${d.uniName}</div><div class="text-sm text-slate-300">${COURSES[d.course].name}</div><div class="text-xs text-slate-500">${d.start} – ${d.end} · CR ${d.cr}</div></div>`),
+    ...S.dropped.map(d => `<div class="py-3 border-b border-slate-800"><div class="font-semibold">${d.uniName}</div><div class="text-sm text-slate-300">${COURSES[d.course].name} (incompleto)</div><div class="text-xs text-slate-500">${d.start} – ${d.end}</div></div>`),
+    S.highSchool ? `<div class="py-3"><div class="font-semibold">${S.school ? S.school.name : 'Ensino Médio'}</div><div class="text-sm text-slate-300">Ensino Médio completo</div>${S.grades.length ? `<div class="text-xs text-slate-500">Média geral ${(S.grades.reduce((a, b) => a + b.g, 0) / S.grades.length).toFixed(1)}${S.enemBest ? ' · Melhor ENEM: ' + S.enemBest : ''}</div>` : ''}</div>` : ''
+  ].join('') || '<p class="text-sm text-slate-500">Sem formação registrada.</p>';
+  const certs = [S.flags.crm && '🩺 CRM — Conselho Regional de Medicina', S.flags.specialty && `🩺 Título de especialista em ${S.flags.specialty}`, S.flags.cro && '🦷 CRO — Conselho Regional de Odontologia', S.flags.oab && '⚖️ OAB — Ordem dos Advogados do Brasil', S.flags.english >= 2 && `🇺🇸 Inglês ${S.flags.english === 3 ? 'fluente' : 'intermediário'}`, S.flags.obmep && '🥇 Medalha de Ouro OBMEP', S.flags.ic && '🔬 Iniciação Científica com artigo publicado'].filter(Boolean);
+  const skills = [...new Set(S.linkedin.map(e => e.field).concat(S.degrees.map(d => COURSES[d.course].name)))];
+  return `<div class="max-w-3xl mx-auto space-y-4">
+    <section class="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="h-24 bg-gradient-to-r from-sky-800 via-sky-600 to-emerald-600"></div>
+      <div class="px-5 pb-5 -mt-10">
+        <div class="w-20 h-20 rounded-full bg-slate-900 border-4 border-slate-900 grid place-items-center text-3xl font-bold bg-gradient-to-br from-emerald-500 to-sky-600">${esc(S.name[0] || '?').toUpperCase()}</div>
+        <div class="mt-2 text-xl font-bold">${esc(S.name)} ${S.flags.oab ? '<span class="text-sm text-slate-400">· OAB</span>' : ''}${S.flags.specialty ? '<span class="text-sm text-slate-400">· Dr(a).</span>' : ''}</div>
+        <div class="text-slate-300">${headline}</div>
+        <div class="text-sm text-slate-500 mt-1">${esc(S.city)}, Brasil · <span class="text-sky-400">${conns}${conns >= 500 ? '+' : ''} conexões</span></div>
+        ${!S.job && S.age >= 16 && S.alive ? `<div class="mt-3 inline-block px-3 py-1 rounded-full bg-emerald-900/50 border border-emerald-700 text-emerald-300 text-xs font-semibold">#OpenToWork</div>` : ''}
+      </div>
+    </section>
+    ${card('Experiência', exp)}
+    ${card('Formação acadêmica', edu)}
+    ${certs.length ? card('Licenças e certificados', `<ul class="space-y-1.5 text-sm">${certs.map(c => `<li>${c}</li>`).join('')}</ul>`) : ''}
+    ${skills.length ? card('Competências', `<div class="flex flex-wrap gap-1.5">${skills.map(s => chip(esc(s), 'bg-sky-900/40 text-sky-200')).join('')}</div>`) : ''}
+  </div>`;
+}
+
+function renderCarreira() {
+  const parts = [];
+  /* Educação */
+  let edu = '';
+  if (S.age < 6) edu = '<p class="text-sm text-slate-400">Você ainda não está na escola. Aproveite a vida de bebê.</p>';
+  else {
+    edu += inSchool() ? `<div class="text-sm mb-2">🎒 <b>${S.school ? S.school.name : ''}</b> — ${schoolLabel(S.age)}</div>` : (S.highSchool ? '<div class="text-sm mb-2 text-emerald-300">✔ Ensino Médio completo</div>' : S.flags.droppedSchool ? '<div class="text-sm mb-2 text-rose-300">✖ Abandonou a escola (faça EJA em Atividades)</div>' : '');
+    if (S.grades.length) edu += `<div class="flex gap-1 items-end h-16 mb-1">${S.grades.map(g => `<div title="${g.label}: ${g.g}" class="flex-1 rounded-t ${g.g >= 7 ? 'bg-sky-500' : g.g >= 5 ? 'bg-amber-500' : 'bg-rose-500'}" style="height:${Math.max(6, g.g * 10)}%"></div>`).join('')}</div><div class="text-xs text-slate-500 mb-3">Notas escolares por ano (0 a 10). Última: ${S.grades[S.grades.length - 1].g.toFixed(1)}</div>`;
+    if (S.uni) { const u = S.uni; edu += `<div class="p-3 rounded-xl bg-slate-950 border border-slate-800 mb-3"><div class="font-semibold">${COURSES[u.course].icon} ${COURSES[u.course].name} — ${u.uniName}</div><div class="text-sm text-slate-400">${u.done}/${u.years} anos concluídos · ${u.payer === 'publica' ? 'Pública' : u.payer === 'prouni' ? 'ProUni' : u.payer === 'fies' ? 'FIES' : u.payer === 'pais' ? 'Pais pagam' : 'Você paga'}${u.fee && u.payer !== 'publica' ? ' · ' + brl(u.fee) + '/mês' : ''}${u.cr.length ? ' · CR ' + (u.cr.reduce((a, b) => a + b, 0) / u.cr.length).toFixed(1) : ''}</div><div class="mt-2">${btn('🚪 Trancar curso', 'G.dropUni()', 'def')}</div></div>`; }
+  }
+  if (S.age >= 16) {
+    edu += `<div class="flex flex-wrap gap-2 items-center">${btn('📝 Fazer o ENEM', 'G.enem()', 'sky', S.flags.enemYear === S.year || S.prison > 0)}${S.enem ? `<span class="text-sm text-slate-400">Último ENEM (${S.enem.year}): <b class="text-slate-100">${S.enem.score}</b> · Preparação: ${S.enemPrep}/6</span>` : `<span class="text-sm text-slate-400">Preparação: ${S.enemPrep}/6 (cursinho em Atividades)</span>`}</div>`;
+    if (hasDegree('direito') || (S.uni && S.uni.course === 'direito')) edu += `<div class="mt-2">${btn('⚖️ Exame da OAB (R$ 300)', 'G.oab()', 'def', !!S.flags.oab)}</div>`;
+    if (hasDegree('medicina')) edu += `<div class="mt-2">${btn('🩺 Prova de Residência Médica', 'G.residency()', 'def', !!S.flags.specialty || !!(S.job && S.job.residency))}</div>`;
+  }
+  parts.push(card('🎓 Educação', edu));
+
+  /* catálogo */
+  if (S.age >= 16) {
+    const valid = S.enem && S.enem.year >= S.year - 1;
+    const cat = Object.entries(COURSES).map(([cid, c]) => {
+      const unis = UNIS.filter(u => uniOffers(u, cid)).map(u => {
+        const cut = uniCut(u, cid), fee = uniFee(u, cid), ok = valid && S.enem.score >= cut && !S.uni && !hasDegree(cid) && S.prison === 0;
+        return `<button ${ok ? '' : 'disabled'} onclick="G.enroll('${cid}','${u.id}')" class="text-left px-2.5 py-1.5 rounded-lg border text-xs transition ${ok ? 'border-emerald-600 bg-emerald-900/30 hover:bg-emerald-800/40' : 'border-slate-800 bg-slate-950 opacity-70 cursor-not-allowed'}">
+          <div class="font-semibold">${u.name} ${u.type === 'pub' ? '<span class="text-sky-400">pública</span>' : ''}</div><div class="text-slate-400">corte ${cut}${fee ? ' · ' + brl(fee) + '/mês' : ' · grátis'}</div></button>`;
+      }).join('');
+      return `<div class="py-3 border-b border-slate-800 last:border-0"><div class="font-semibold mb-2">${c.icon} ${c.name} <span class="text-xs text-slate-500 font-normal">${c.years} anos</span></div><div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5">${unis}</div></div>`;
+    }).join('');
+    parts.push(card('🏛️ Catálogo de faculdades (SISU / ProUni / FIES)', `<p class="text-xs text-slate-400 mb-2">${valid ? `Sua nota válida: <b class="text-emerald-300">${S.enem.score}</b>. Opções em verde estão ao seu alcance.` : 'Faça o ENEM para liberar as inscrições (nota vale por 2 anos).'} Públicas são gratuitas; particulares aceitam ProUni (nota alta e família não-rica), FIES ou pagamento direto.</p>${cat}`));
+  }
+
+  /* emprego atual */
+  if (S.job) {
+    const j = S.job, p = payroll(j.salary, j.type);
+    parts.push(card('💼 Emprego atual', `<div class="flex flex-wrap items-start justify-between gap-2 mb-3"><div><div class="text-lg font-semibold">${j.title}</div><div class="text-sm text-slate-400">${esc(j.company)} · desde ${j.start} · ${TYPE_LABEL[j.type]}</div></div>${chip(j.residency ? `Residência: falta(m) ${j.residency.left} ano(s)` : `Nível ${j.level + 1}/${j.ladder.length}`, 'bg-slate-800 text-slate-300')}</div>
+      <div class="mb-3"><div class="flex justify-between text-sm mb-1"><span>📈 Desempenho</span><span class="font-mono">${Math.round(j.perf)}/100</span></div><div class="h-2.5 bg-slate-800 rounded-full overflow-hidden"><div class="h-full ${j.perf > 70 ? 'bg-emerald-500' : j.perf > 35 ? 'bg-amber-500' : 'bg-rose-500'}" style="width:${j.perf}%"></div></div></div>
+      <div class="grid sm:grid-cols-2 gap-x-6">${row('Salário bruto', brl(j.salary))}${p.inss ? row(j.type === 'PJ' ? 'INSS (pró-labore)' : 'INSS', '-' + brl(p.inss)) : ''}${p.irrf ? row(j.type === 'PJ' ? 'Simples Nacional (~6%)' : 'IRRF', '-' + brl(p.irrf)) : ''}${row('Salário líquido', `<b class="text-emerald-300">${brl(p.net)}</b>`)}${j.type === 'CLT' ? row('FGTS depositado/mês (8%)', brl(p.fgts)) + row('FGTS neste emprego', brl(j.fgtsJob)) : ''}${j.type === 'CLT' || j.type === 'estatutario' ? row('13º + férias', 'Pagos em dezembro') : row('13º / férias', '<span class="text-slate-500">Não tem</span>')}</div>
+      <div class="flex flex-wrap gap-2 mt-4">${btn('💪 Trabalhar duro', "G.work('duro')")}${btn('☕ Puxar saco do chefe', "G.work('puxar')")}${btn('💸 Pedir aumento', "G.work('aumento')")}${btn('🚀 Pedir promoção', "G.work('promo')", 'def', j.level >= j.ladder.length - 1)}${btn('😴 Fazer corpo mole', "G.work('mole')")}${btn('🚪 Pedir demissão', 'G.quit()', 'dan')}</div>`));
+  }
+  if (S.sideGigs.length) parts.push(card('🧩 Rendas extras', S.sideGigs.map((g, i) => `<div class="flex items-center justify-between gap-2 py-1.5">${g.name} — ${brl(g.monthly)}/mês ${btn('Sair', `G.quitGig(${i})`, 'def')}</div>`).join('')));
+  if (S.unemp.months > 0) parts.push(card('', `<div class="text-sm">🧾 Seguro-desemprego: ${S.unemp.months} parcela(s) de ${brl(S.unemp.value)}</div>`));
+
+  /* vagas */
+  if (S.age >= 14) {
+    const list = JOBS.filter(d => d.id !== 'residente').map(d => {
+      const ok = jobAvailable(d), cur = S.job && S.job.id === d.id;
+      return `<div class="flex items-center gap-3 py-2.5 border-b border-slate-800 last:border-0 ${ok ? '' : 'opacity-50'}">
+        <div class="min-w-0 flex-1"><div class="font-medium text-sm">${d.ladder[0]} <span class="text-xs text-slate-500">· ${d.field}</span></div><div class="text-xs text-slate-400">~${brl(d.base)}/mês · ${TYPE_LABEL[d.type]} · ${reqLabel(d.req, d.flag)}${d.minAge && d.minAge !== 18 ? ` · ${d.minAge}${d.maxAge ? '–' + d.maxAge : '+'} anos` : ''}${d.minSmarts ? ' · 🧠 ' + d.minSmarts + '+' : ''}${d.looksReq ? ' · ✨ ' + d.looksReq + '+' : ''}</div></div>
+        ${btn(cur ? 'Atual' : 'Candidatar', `G.apply('${d.id}')`, ok && !cur ? 'pri' : 'def', !ok || cur || S.prison > 0)}</div>`;
+    }).join('');
+    parts.push(card('🔎 Vagas de emprego', list));
+  }
+  if (S.age >= 18) {
+    parts.push(card('🏛️ Concursos públicos', `<p class="text-xs text-slate-400 mb-2">Estabilidade e regime estatutário. Preparação atual: <b>${S.concursoPrep}/8</b> (estude em Atividades). Taxa: R$ 150.</p>` + CONCURSOS.map(c => {
+      const ok = concursoAvail(c);
+      return `<div class="flex items-center gap-3 py-2.5 border-b border-slate-800 last:border-0 ${ok ? '' : 'opacity-50'}"><div class="min-w-0 flex-1"><div class="font-medium text-sm">${c.name}</div><div class="text-xs text-slate-400">${c.org} · ${brl(c.base)} · corte ${c.cut}/100 · ${reqLabel(c.req, c.flag)}</div></div>${btn('Prestar', `G.concurso('${c.id}')`, ok ? 'sky' : 'def', !ok || S.prison > 0 || (S.job && S.job.id === c.id))}</div>`;
+    }).join('')));
+    parts.push(card('🚀 Empreender', S.business ? (() => { const b = S.business; return `<div class="text-lg font-semibold">${b.name}</div><div class="text-sm text-slate-400 mb-2">Desde ${b.start}</div>${row('Reputação', Math.round(b.rep) + '/100')}${row('Lucro mensal', `<span class="${b.profitM < 0 ? 'text-rose-400' : 'text-emerald-300'}">${brl(b.profitM)}</span>`)}${row('Valor estimado', brl(b.value))}<div class="flex flex-wrap gap-2 mt-3">${btn('📣 Investir em marketing (R$ 5.000)', "G.biz('mkt')")}${btn('🤝 Vender negócio', "G.biz('sell')", 'warn')}</div>`; })() :
+      BUSINESSES.map(b => { const ok = reqOk(b.req); return `<div class="flex items-center gap-3 py-2.5 border-b border-slate-800 last:border-0 ${ok ? '' : 'opacity-50'}"><div class="min-w-0 flex-1"><div class="font-medium text-sm">${b.name}</div><div class="text-xs text-slate-400">Investimento ${brl(b.cost)} · potencial ~${brl(b.base)}/mês · ${b.req ? reqLabel(b.req) : 'Sem requisito'} · risco ${b.vol > 0.8 ? 'altíssimo' : b.vol > 0.35 ? 'médio' : 'baixo'}</div></div>${btn('Abrir', `G.openBiz('${b.id}')`, ok ? 'warn' : 'def', !ok || S.money < b.cost || S.prison > 0)}</div>`; }).join('')));
+    const minAge = S.gender === 'F' ? 62 : 65;
+    parts.push(card('🏖️ Aposentadoria (INSS)', `<p class="text-sm text-slate-400 mb-2">Idade mínima: ${minAge} anos · Contribuição mínima: 15 anos · Você tem: <b class="text-slate-200">${S.contribYears} anos</b>. FGTS acumulado: <b class="text-slate-200">${brl(S.fgts)}</b> (saque na demissão sem justa causa, compra de imóvel ou aposentadoria).</p>${S.retired ? `<div class="text-emerald-300 text-sm">Aposentad${oa()} desde ${S.retired.year}: ${brl(S.retired.pension)}/mês</div>` : btn('Solicitar aposentadoria', 'G.retire()', 'def', S.age < minAge)}`));
+  }
+  return `<div class="space-y-4">${parts.join('')}</div>`;
+}
+
+function renderFinancas() {
+  const b = budget();
+  const inv = sum(Object.values(S.inv));
+  const minor = S.age < 18;
+  const resumo = card('📊 Patrimônio', `<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+      ${[['Dinheiro', S.money], ['Investimentos', inv], ['FGTS', S.fgts], ['Patrimônio líquido', netWorth()]].map(([l, v]) => `<div class="p-3 rounded-xl bg-slate-950 border border-slate-800"><div class="text-xs text-slate-400">${l}</div><div class="font-mono font-semibold ${v < 0 ? 'text-rose-400' : 'text-slate-100'}">${brl(v)}</div></div>`).join('')}</div>
+      ${S.home ? row('Imóvel: ' + S.home.name, brl(S.home.value) + (S.home.fin ? ` <span class="text-rose-300">(deve ${brl(S.home.fin.balance)})</span>` : '')) : ''}
+      ${S.vehicles.length ? row('Veículos', brl(sum(S.vehicles.map(v => v.value)))) : ''}
+      ${S.business ? row('Empresa', brl(S.business.value)) : ''}
+      ${S.fies.debt > 0 ? row('Dívida FIES', `<span class="text-rose-300">${brl(S.fies.debt)}</span>`) : ''}
+      ${row('Ano passado', `entrou ${brl(S.lastYear.inc)} · saiu ${brl(S.lastYear.exp)} · investimentos ${S.lastYear.inv >= 0 ? '+' : ''}${brl(S.lastYear.inv)}`)}`);
+  const orc = card('🧾 Orçamento mensal', `${b.inc.length || b.exp.length ? '' : '<p class="text-sm text-slate-500">Sem receitas ou despesas próprias por enquanto.</p>'}
+      ${b.inc.map(([l, v]) => row(l, `<span class="text-emerald-300">+${brl(v)}</span>`)).join('')}
+      ${b.exp.map(([l, v]) => row(l, `<span class="text-rose-300">-${brl(v)}</span>`)).join('')}
+      ${row('<b>Saldo mensal</b>', `<b class="${b.net < 0 ? 'text-rose-400' : 'text-emerald-400'}">${b.net >= 0 ? '+' : ''}${brl(b.net)}</b>`)}`);
+  const moradia = card('🏠 Moradia', minor ? '<p class="text-sm text-slate-400">Você mora com sua família até os 18.</p>' : `
+      <div class="text-sm mb-3">Atual: <b>${S.housing.kind === 'pais' ? 'Casa dos pais' : S.housing.kind === 'propria' ? S.home.name + ' (própria)' : S.housing.name + ' — ' + brl(S.housing.rent) + '/mês'}</b> ${S.housing.kind === 'aluguel' && parentsAlive() ? btn('Voltar pros pais', 'G.parents()', 'def', false, 'ml-2') : ''}</div>
+      ${S.home ? `${row('Valor de mercado', brl(S.home.value))}${S.home.fin ? row('Saldo devedor', brl(S.home.fin.balance)) + row('Parcela', brl(S.home.fin.payment) + ` · ${S.home.fin.months} meses restantes`) : row('Financiamento', 'Quitado ✔')}<div class="mt-3">${btn('🏷️ Vender imóvel', 'G.sellHome()', 'warn')}</div>` : `
+      <div class="text-xs text-slate-400 mb-1">ALUGAR (caução de 3 meses, renda mínima ~2,5x)</div>
+      ${RENTALS.map(r => `<div class="flex items-center gap-2 py-2 border-b border-slate-800">${'<div class="flex-1 text-sm">' + r.name + '<div class="text-xs text-slate-500">' + brl(r.rent) + '/mês</div></div>'}${btn(S.housing.id === r.id ? 'Atual' : 'Alugar', `G.rent('${r.id}')`, 'def', S.housing.id === r.id)}</div>`).join('')}
+      <div class="text-xs text-slate-400 mt-4 mb-1">COMPRAR (FGTS pode ser usado na entrada · financiamento 30 anos, parcela até 30% da renda)</div>
+      ${HOMES.map(h => `<div class="flex flex-wrap items-center gap-2 py-2 border-b border-slate-800"><div class="flex-1 min-w-[160px] text-sm">${h.name}<div class="text-xs text-slate-500">${brl(h.price)} · entrada ${brl(h.price * 0.2)}</div></div>${btn('À vista', `G.buyHome('${h.id}',false)`, 'def')}${btn('Financiar', `G.buyHome('${h.id}',true)`, 'sky')}</div>`).join('')}`}`);
+  const veic = card('🚗 Veículos', minor ? '<p class="text-sm text-slate-400">Só com CNH, aos 18.</p>' : `
+      ${S.vehicles.map((v, i) => `<div class="flex items-center gap-2 py-2 border-b border-slate-800"><div class="flex-1 text-sm">${v.name}<div class="text-xs text-slate-500">valor ${brl(v.value)} · manutenção ${brl(v.maint)}/mês · IPVA ~${brl(v.value * 0.04)}/ano</div></div>${btn('Vender', `G.sellVehicle(${i})`, 'warn')}</div>`).join('') || '<p class="text-sm text-slate-500 mb-2">Você anda de ônibus/metrô.</p>'}
+      <div class="text-xs text-slate-400 mt-3 mb-1">CONCESSIONÁRIA (à vista)</div>
+      ${VEHICLES.map(v => `<div class="flex items-center gap-2 py-2 border-b border-slate-800"><div class="flex-1 text-sm">${v.name}<div class="text-xs text-slate-500">${brl(v.price)} · ${brl(v.maint)}/mês</div></div>${btn('Comprar', `G.buyVehicle('${v.id}')`, 'def', S.money < v.price)}</div>`).join('')}`);
+  const m = S.market;
+  const invc = card('📈 Investimentos', S.age < 16 ? '<p class="text-sm text-slate-400">A partir dos 16 anos.</p>' : `
+      <div class="flex flex-wrap gap-2 text-xs mb-3">${chip('Selic: ' + m.selic.toFixed(2) + '% a.a.')}${chip('Ibovespa (ano): ' + (m.bolsa >= 0 ? '+' : '') + m.bolsa + '%', m.bolsa >= 0 ? 'bg-emerald-900/50 text-emerald-200' : 'bg-rose-900/50 text-rose-200')}${chip('IFIX (ano): ' + (m.fii >= 0 ? '+' : '') + m.fii + '%')}</div>
+      <label class="block mb-3"><span class="text-xs text-slate-400">Valor (R$)</span><input id="inv-amt" inputmode="numeric" placeholder="ex: 5000" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 outline-none focus:border-emerald-500"></label>
+      ${Object.entries(INV_META).map(([k, meta]) => `<div class="py-2.5 border-b border-slate-800 last:border-0"><div class="flex items-center justify-between gap-2"><div class="min-w-0"><div class="text-sm font-medium">${meta.name}</div><div class="text-xs text-slate-500">${meta.desc} · risco ${meta.risk}</div></div><div class="font-mono text-sm">${brl(S.inv[k])}</div></div><div class="flex gap-2 mt-2">${btn('Aplicar', `G.invest('${k}',1)`, 'pri', S.prison > 0)}${btn('Resgatar', `G.invest('${k}',-1)`, 'def', S.inv[k] <= 0)}</div></div>`).join('')}
+      <p class="text-xs text-slate-500 mt-2">Todos os valores do jogo são em reais de hoje: os rendimentos já vêm descontados da inflação (~4,5% a.a.) e são aplicados mês a mês ao envelhecer. A bolsa sorteia o humor do mercado a cada ano (com chance de crash).</p>`);
+  return `<div class="grid lg:grid-cols-2 gap-4">${resumo}${orc}${moradia}${veic}<div class="lg:col-span-2">${invc}</div></div>`;
+}
+
+function personCard(name, sub, rel, actions, extra = '') {
+  return `<div class="p-3 rounded-xl bg-slate-950 border border-slate-800"><div class="flex items-center justify-between gap-2"><div class="min-w-0"><div class="font-medium truncate">${name}</div><div class="text-xs text-slate-400">${sub}</div></div></div>
+    ${rel != null ? `<div class="mt-2"><div class="flex justify-between text-xs mb-1"><span class="text-slate-400">Relacionamento</span><span>${Math.round(rel)}%</span></div><div class="h-1.5 bg-slate-800 rounded-full"><div class="h-full rounded-full bg-pink-500" style="width:${rel}%"></div></div></div>` : ''}${extra}
+    ${actions ? `<div class="flex flex-wrap gap-1.5 mt-3">${actions}</div>` : ''}</div>`;
+}
+function renderRelacoes() {
+  const fam = S.family.parents.map((p, i) => personCard(`${p.role}: ${esc(p.name)}`, p.alive ? `${p.age} anos` : `Falecid${p.role === 'Mãe' ? 'a' : 'o'}${p.note ? ' (' + p.note + ')' : ''}`, p.alive ? p.rel : null, p.alive ? btn('Passar tempo', `G.fam(${i},'time','par')`) + btn('Pedir dinheiro', `G.fam(${i},'money','par')`) + btn('Brigar', `G.fam(${i},'fight','par')`) : '')).join('') +
+    S.family.siblings.map((p, i) => personCard(`${p.role}: ${esc(p.name)}`, p.alive ? `${p.age} anos` : 'Falecid' + oa(p.gender), p.alive ? p.rel : null, p.alive ? btn('Passar tempo', `G.fam(${i},'time','sib')`) + btn('Brigar', `G.fam(${i},'fight','sib')`) : '')).join('');
+  const p = S.partner;
+  const partner = p ? personCard(`${p.status === 'casado' ? '💍' : '❤️'} ${esc(p.name)}`, `${p.age} anos · ${p.job} · ${p.status === 'casado' ? 'Casad' + oa(p.gender) + ' (' + (p.regime === 'comunhao' ? 'comunhão parcial' : 'separação total') + ')' : 'Namorando há ' + (p.years || 0) + ' ano(s)'} · renda ~${brl(p.income)}/mês`, p.rel,
+    btn('🍝 Encontro (R$ 300)', "G.partner('date')") + btn('🎁 Presente (R$ 800)', "G.partner('gift')") + btn('💬 Conversar', "G.partner('talk')") + btn('😤 Brigar', "G.partner('fight')") + (p.status === 'namoro' ? btn('💍 Pedir em casamento', "G.partner('propose')", 'vio') : '') + btn('👶 Ter filho', "G.partner('baby')", 'def') + btn('🧸 Adotar (R$ 5.000)', "G.partner('adopt')") + btn(p.status === 'casado' ? '⚖️ Divórcio' : '💔 Terminar', "G.partner('breakup')", 'dan'))
+    : '<p class="text-sm text-slate-500">Solteir' + oa() + '. Bora conhecer gente?</p>';
+  const kids = S.children.map((c, i) => personCard(`${c.gender === 'F' ? '👧' : '👦'} ${esc(c.name)}`, `${c.age} anos · ${c.age >= 18 ? 'Adult' + oa(c.gender) + ', saiu de casa' : c.custody ? (c.age < 6 ? 'Creche/primeira infância' : 'Escola ' + c.school) + ' · ' + brl(kidCost(c)) + '/mês' : 'Mora com ' + esc((c.other || 'ex').split(' ')[0]) + ' · pensão ' + brl(alimony(c)) + '/mês'}`, c.rel,
+    btn('Passar tempo', `G.child(${i},'time')`) + btn('Dar R$ 1.000', `G.child(${i},'money')`) + (c.custody && c.age >= 6 && c.age < 18 ? btn(c.school === 'pública' ? 'Mudar p/ particular (+R$ 2.800)' : 'Mudar p/ pública', `G.child(${i},'school')`) : ''))).join('');
+  const exes = S.exes.length ? `<div class="text-sm text-slate-400">${S.exes.map(e => `${esc(e.name)} <span class="text-slate-600">(${e.status === 'casado' ? 'ex-cônjuge' : 'ex'}, ${e.year})</span>`).join(' · ')}</div>` : '';
+  const prospects = S.prospects.map(x => personCard(`${x.gender === 'F' ? '👩' : x.gender === 'M' ? '👨' : '🧑'} ${esc(x.name)}`, `${x.age} anos · ${x.job} · conheceu: ${x.place}`, null, btn(S.partner ? '😈 Ter um caso' : '💘 Chamar pra sair', `G.date('${x.id}')`, S.partner ? 'dan' : 'vio'),
+    `<div class="grid grid-cols-3 gap-2 mt-2 text-xs"><div>✨ Aparência <b>${x.looks}</b></div><div>🔥 Atração <b>${x.attraction}</b></div><div>🧩 Compat. <b>${x.compat}</b></div></div>`)).join('');
+  return `<div class="grid lg:grid-cols-2 gap-4">
+    ${card('👨‍👩‍👧 Família', `<div class="grid gap-2">${fam}</div>`)}
+    <div class="space-y-4">
+      ${card('❤️ Relacionamento', partner + (exes ? `<div class="mt-3"><div class="text-xs text-slate-500 mb-1">Ex-relacionamentos</div>${exes}</div>` : ''))}
+      ${card('👶 Filhos', kids ? `<div class="grid gap-2">${kids}</div>` : '<p class="text-sm text-slate-500">Nenhum filho (ainda).</p>')}
+    </div>
+    <div class="lg:col-span-2">${card('🌎 Conhecer pessoas', S.age < 16 ? '<p class="text-sm text-slate-400">Aos 16 anos libera.</p>' : `
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <select onchange="G.pref(this.value)" class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm">${[['F', 'Interesse: mulheres'], ['M', 'Interesse: homens'], ['all', 'Interesse: todos']].map(([v, l]) => `<option value="${v}" ${S.pref === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        ${btn('🚶 Na rua', "G.meet('rua')")}${btn('🪩 Na balada', "G.meet('balada')")}${btn('🎓 Na faculdade', "G.meet('faculdade')", 'def', !S.uni)}${btn('💼 No trabalho', "G.meet('trabalho')", 'def', !S.job)}${btn('📱 App de namoro', "G.meet('app')")}${btn('⛪ Na igreja', "G.meet('igreja')")}
+      </div>
+      ${prospects ? `<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">${prospects}</div>` : '<p class="text-sm text-slate-500">Ninguém por perto. Saia de casa!</p>'}`)}</div>
+  </div>`;
+}
+
+function renderAtividades() {
+  const cats = {};
+  Object.entries(ACTIVITIES).forEach(([id, a]) => {
+    if (S.age < a.min || S.age > a.max) return;
+    if (a.c && !safeCond(a.c)) return;
+    (cats[a.cat] = cats[a.cat] || []).push([id, a]);
+  });
+  const blocks = Object.entries(cats).map(([cat, list]) => card(cat, `<div class="grid sm:grid-cols-2 gap-2">${list.map(([id, a]) => {
+    const dis = S.energy <= 0 || (a.cost && S.money < a.cost) || (S.prison > 0 && !['ler', 'meditar', 'correr', 'igreja'].includes(id));
+    return `<button ${dis ? 'disabled' : ''} onclick="G.act('${id}')" class="text-left p-3 rounded-xl border border-slate-800 bg-slate-950 hover:border-emerald-600 transition disabled:opacity-40 disabled:cursor-not-allowed"><div class="font-medium text-sm">${a.l}</div><div class="text-xs text-slate-500">${a.d}</div></button>`;
+  }).join('')}</div>`)).join('');
+  return `<div class="space-y-4"><p class="text-sm text-slate-400">Cada atividade gasta ⚡1 de energia. Você tem <b class="text-amber-300">${S.energy}</b> neste ano.</p>${blocks || card('', '<p class="text-sm text-slate-400">Bebês só choram, mamam e dormem. Envelheça!</p>')}</div>`;
+}
+
+function gameOver() {
+  const d = S.death || { age: S.age, cause: 'causa desconhecida' };
+  const last = [...S.linkedin].sort((a, b) => b.start - a.start)[0];
+  modal('⚰️ Fim da vida', `<div class="text-center"><div class="text-5xl mb-2">🪦</div><div class="text-xl font-bold">${esc(S.name)}</div><div class="text-slate-400">${S.birthYear} – ${S.year} · ${d.age} anos</div><div class="text-sm text-slate-400 mt-1">Causa: ${d.cause}</div></div>
+    <div class="mt-4">${row('Patrimônio deixado', brl(netWorth()))}${row('Última ocupação', last ? esc(last.title) + ' — ' + esc(last.company) : 'Nenhuma')}${row('Empregos na carreira', S.linkedin.length)}${row('Diplomas', S.degrees.map(x => COURSES[x.course].name).join(', ') || 'Nenhum')}${row('Filhos', S.children.length)}${row('Cônjuge', S.partner ? esc(S.partner.name) : '—')}${row('Felicidade final', Math.round(S.st.happy) + '%')}</div>`,
+    [{ l: '👶 Começar nova vida', v: 'pri', fn: () => G.newLife() }, { l: 'Ver o LinkedIn final', v: 'def', fn: () => { TAB = 'linkedin'; render(); } }]);
+}
+
+/* =========================================================
+   API GLOBAL (onclick)
+   ========================================================= */
+window.G = {
+  _mc: i => {
+    const f = MFN[i]; closeModal(); if (f) f();
+    // se nenhum novo modal abriu, continua a fila de eventos do ano
+    if (S && $('modal').classList.contains('hidden')) { if (!S.alive) gameOver(); else if (Q.length) processQueue(); }
+  },
+  cset: (k, v) => { CREATE[k] = v; if (STAT_META[k]) { const el = $('v-' + k); if (el) el.textContent = v; } if (k === 'familyClass' || k === 'country') renderCreate(); },
+  cRandName: () => { CREATE.name = rname(CREATE.gender); renderCreate(); },
+  cRoll: () => { Object.assign(CREATE, rollAttrs()); renderCreate(); },
+  start: () => {
+    const name = (CREATE.name || '').trim();
+    if (name.length < 2) return toast('Digite um nome.');
+    S = newState(CREATE); Q = []; TAB = 'perfil';
+    addLog(`👶 Você nasceu em ${S.city}, ${S.country}! ${S.gender === 'F' ? 'É uma menina' : S.gender === 'M' ? 'É um menino' : 'É um bebê'} de ${rnd(2, 4)},${rnd(1, 9)}kg.`, 'text-emerald-300');
+    addLog(`Sua mãe é ${esc(S.family.parents[0].name)} (${S.family.parents[0].age}) e ${S.family.parents[1].alive ? `seu pai é ${esc(S.family.parents[1].name)} (${S.family.parents[1].age})` : 'seu pai ' + S.family.parents[1].note}. Família ${{ pobre: 'humilde', media: 'de classe média', rica: 'rica' }[S.familyClass]}.`);
+    if (S.family.siblings.length) addLog(`Você tem ${S.family.siblings.length} irmão(s): ${S.family.siblings.map(s => esc(s.name.split(' ')[0])).join(', ')}.`);
+    save(); render();
+  },
+  continueGame: () => { const s = loadSave(); if (!s) return; S = s; S.flags = S.flags || { english: 0 }; Q = []; TAB = 'perfil'; render(); },
+  newLife: () => { closeModal(); clearSave(); S = null; CREATE = null; Q = []; renderCreate(); window.scrollTo(0, 0); },
+  tab: t => { TAB = t; render(); window.scrollTo(0, 0); },
+  ageUp, act: doActivity, enem: takeEnem, enroll, dropUni, oab: examOAB, residency: examResidency,
+  apply: applyJob, concurso: takeConcurso, work: workAction, quit: quitJob, quitGig, openBiz: openBusiness, biz: bizAction, retire, habeas,
+  meet, date: dateProspect, partner: partnerAction, fam: familyAction, child: childAction,
+  pref: v => { S.pref = v; save(); },
+  rent, parents: backToParents, buyHome, sellHome, buyVehicle, sellVehicle, invest
+};
+
+/* início */
+(function boot() {
+  const s = loadSave();
+  if (s && s.alive) { S = s; S.flags = S.flags || { english: 0 }; render(); }
+  else renderCreate();
+})();
+</script>
+</body>
+</html>
